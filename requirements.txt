@@ -1,0 +1,5 @@
+# macOS: pyrealsense2 is built from source by ./build_pyrealsense_mac.sh (v2.59.1, Python 3.13)
+#        because the pip wheel (pyrealsense2-macosx 2.56.5) segfaults on macOS 15.
+pyrealsense2; sys_platform != "darwin"
+numpy
+opencv-python
