@@ -2,9 +2,9 @@
 # Build pyrealsense2 2.59.1 (same version as Homebrew's working `realsense-viewer`)
 # and put it into ./.venv (Python 3.13), replacing the crashing pip wheel.
 #
-#   ./build_pyrealsense_mac.sh        (~10-20 min on Apple M1)
+#   scripts/build_pyrealsense_mac.sh        (~10-20 min on Apple M1)
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."   # repo root
 PROJECT="$(pwd)"
 VERSION=v2.59.1
 PY=/opt/homebrew/bin/python3.13
@@ -39,10 +39,10 @@ echo ">> 4/4 Recreate .venv with Python 3.13"
 for _ in 1 2 3; do rm -rf "$PROJECT/.venv" 2>/dev/null && break; sleep 1; done  # Finder may recreate .DS_Store
 "$PY" -m venv "$PROJECT/.venv"
 "$PROJECT/.venv/bin/pip" install -q --upgrade pip
-"$PROJECT/.venv/bin/pip" install -q numpy opencv-python
+"$PROJECT/.venv/bin/pip" install -q -r "$PROJECT/requirements.txt" -e "$PROJECT"
 SITE="$("$PROJECT/.venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
 echo "$(dirname "$SO")" > "$SITE/pyrealsense2_local.pth"
 
 "$PROJECT/.venv/bin/python" -c "import pyrealsense2 as rs; print('pyrealsense2 OK, version', rs.__version__)"
 echo
-echo "Done. Now run:  ./run_camera.sh"
+echo "Done. Now run:  scripts/run_camera.sh"

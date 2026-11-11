@@ -1,0 +1,27 @@
+# Astra agent harness.
+# Env overrides: ASTRA_MODEL, ASTRA_EXECUTION_MODE. API key comes from .env.
+
+model: gpt-6-astra
+api_key_env: OPENAI_API_KEY
+max_output_tokens: 1000
+max_steps: 20            # model ⇄ tool round-trips per task
+
+# dry_run  validate tool calls, never touch hardware   (default — start here)
+# confirm  ask on the terminal before each motion/gripper tool
+# live     run tools directly (validation + safety checks still apply)
+execution_mode: dry_run
+
+# Restrict which actions the model may call. Empty = everything in
+# src/actions/registry.py.
+allowed_tools:
+  - get_robot_state
+  - list_saved_positions
+  - joint_step
+  - move_to_saved_position
+  - gripper_open
+  - gripper_close
+  - gripper_move
+  - stop
+
+# Leave empty to use agent.harness.DEFAULT_INSTRUCTIONS.
+system_prompt: ""

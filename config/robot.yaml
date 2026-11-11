@@ -1,0 +1,32 @@
+# Dobot Nova 2 — hardware + safety limits.
+# Env overrides: NOVA2_IP, NOVA2_UI_PORT
+
+ip: 192.168.5.1          # robot LAN1; Mac Ethernet = 192.168.5.100/24
+timeout_s: 3.0
+
+ui_host: 127.0.0.1       # keep local-only
+ui_port: 8765
+
+speed:                   # percent, used for SpeedJ/AccJ and SpeedFactor
+  min: 1
+  max: 100
+
+joint_step:              # relative jog, degrees
+  min_deg: 0.1
+  max_deg: 20.0
+
+# Cartesian safety box in robot base frame (mm). PLACEHOLDER values —
+# measure your cell (table height, walls, camera mount) before relying on it.
+workspace:
+  x: [-600, 600]
+  y: [-600, 600]
+  z: [0, 700]
+
+gripper:                 # DH-Robotics PGC over RS485 (Modbus RTU)
+  slave_id: 1
+  baud: 115200
+  parity: N
+  force: 30              # 20–100 %
+  speed: 50              # 1–100 %
+  open_position: 1000    # ‰ of stroke
+  closed_position: 0

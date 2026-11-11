@@ -1,4 +1,17 @@
+# secrets
+.env
+
+# python
 .venv/
 __pycache__/
-camera_samples/
+*.egg-info/
+.pytest_cache/
+
+# runtime data (keep the folders, not the contents)
+data/captures/*
+data/logs/*
+data/episodes/*
+data/memory/*
+!data/**/.gitkeep
+
 .DS_Store

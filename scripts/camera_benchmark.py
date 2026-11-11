@@ -12,7 +12,7 @@ What it does:
         - dropped frames (from frame numbers)
         - bytes per frame and bandwidth (MB/s)
      plus a total bandwidth and depth-quality stats (valid pixels, min/max/median range).
-  5. Optionally saves one sample of each stream to ./camera_samples/.
+  5. Optionally saves one sample of each stream to ./data/captures/camera_samples/.
 
 Install:
   pip install pyrealsense2 numpy          # Linux / Windows
@@ -294,7 +294,7 @@ def depth_quality(depth_frame, depth_scale):
     return pct, 0.0, 0.0, 0.0
 
 
-def save_samples(frames, depth_scale, outdir="camera_samples"):
+def save_samples(frames, depth_scale, outdir=os.path.join("data", "captures", "camera_samples")):
     os.makedirs(outdir, exist_ok=True)
     for f in frames:
         key = stream_key(f.get_profile())
@@ -465,8 +465,8 @@ def run_opencv(args):
         shape = frame.shape
 
         if args.save and not saved:
-            os.makedirs("camera_samples", exist_ok=True)
-            cv2.imwrite(os.path.join("camera_samples", "color_opencv.png"), frame)
+            os.makedirs(os.path.join("data", "captures", "camera_samples"), exist_ok=True)
+            cv2.imwrite(os.path.join(os.path.join("data", "captures", "camera_samples"), "color_opencv.png"), frame)
             saved = True
         if args.show:
             left = label(frame.copy(), f"COLOUR {frame.shape[1]}x{frame.shape[0]}  (OpenCV)")
@@ -498,7 +498,7 @@ def run_opencv(args):
     print(f"  bandwidth      : {human_bytes(bw).strip()}/s  = {bw * 8 / 1e6:.1f} Mbit/s (decoded)")
     print(f"  ~ {human_bytes(bw * 60).strip()} per minute, {human_bytes(bw * 3600).strip()} per hour")
     if saved:
-        print("  sample saved to ./camera_samples/color_opencv.png")
+        print("  sample saved to ./data/captures/camera_samples/color_opencv.png")
     print("\n  Note: depth, infrared and IMU need librealsense (run without --opencv).")
 
 
