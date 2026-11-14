@@ -46,11 +46,16 @@ class RobotActions:
         return v.require_motion_ready(self.robot.feedback())
 
     # -- dashboard -------------------------------------------------------
-    _SYSTEM = {"enable": "enable", "disable": "disable", "clear": "clear_error", "stop": "stop"}
+    _SYSTEM = {"power_on": "power_on", "enable": "enable", "disable": "disable",
+               "clear": "clear_error", "stop": "stop"}
 
     def system(self, action: str) -> str:
         if action not in self._SYSTEM:
             raise ValidationError("Thao tác không hợp lệ.")
+        if action == "stop":
+            # Never wait for the lock: a blocking skill may be holding it mid-motion.
+            log.warning("STOP requested")
+            return self.robot.stop()
         with self.lock:
             log.info("system %s", action)
             return getattr(self.robot, self._SYSTEM[action])()

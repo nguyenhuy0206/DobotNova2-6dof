@@ -48,3 +48,12 @@ def test_gripper_requires_connect(actions):
         actions.gripper_open()
     actions.gripper_connect()
     actions.gripper_open()
+
+
+def test_stop_does_not_wait_for_lock(actions, sim):
+    with actions.lock:
+        import threading
+        done = threading.Event()
+        threading.Thread(target=lambda: (actions.system("stop"), done.set()), daemon=True).start()
+        assert done.wait(1.0)
+    assert sim.dashboard_log[-1] == "ResetRobot()"

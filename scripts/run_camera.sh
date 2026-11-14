@@ -9,6 +9,9 @@
 # Press q in the window to quit; the data report is printed afterwards.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# Python 3.13 ignores .pth files with the macOS "hidden" flag (Finder/iCloud can set it),
+# which would silently break the editable install. Clear it every launch.
+chflags nohidden .venv/lib/python3*/site-packages/*.pth 2>/dev/null || true
 PY=.venv/bin/python
 SECONDS_LIMIT=3600   # run up to 1 hour, quit earlier with q
 

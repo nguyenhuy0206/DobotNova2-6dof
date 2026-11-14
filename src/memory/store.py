@@ -69,9 +69,19 @@ class EpisodeStore:
         with (self.root / f"{episode_id}.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
+    def save_image(self, episode_id: str, name: str, jpeg_b64: str) -> Path:
+        """Store a camera image the agent saw, in data/episodes/<id>/."""
+        import base64
+        folder = self.root / episode_id
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        path.write_bytes(base64.b64decode(jpeg_b64))
+        return path
+
     def load(self, episode_id: str) -> list[dict]:
         path = self.root / f"{episode_id}.jsonl"
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
     def list(self) -> list[str]:
-        return sorted(p.stem for p in self.root.glob("*.jsonl"))
+        """Episode ids (YYYYMMDD-HHMMSS-xxxxxx), oldest first; index.jsonl etc. are not episodes."""
+        return sorted(p.stem for p in self.root.glob("*.jsonl") if p.stem[:8].isdigit())

@@ -11,7 +11,9 @@
 @media(max-width:1350px){.shell{grid-template-columns:75px 1fr}.sidebar{padding:20px 10px}.logo{justify-content:center;padding:0 0 28px}.logo h2,.logo small,.nav-btn span,.section-label,.sidebar-info,.sidebar-bottom span{display:none}.nav-btn{justify-content:center;padding:11px}.nav-btn.active:before{left:-10px}.nav-badge{display:none}.grid-main{grid-template-columns:minmax(320px,1.2fr) minmax(330px,1fr) 270px;gap:11px}.content{padding:21px 20px}.topbar{padding:0 20px}}
 @media(max-width:1100px){.grid-main{grid-template-columns:1fr 1fr;grid-template-rows:360px 195px auto;height:auto;max-height:none}.controls{grid-row:3;grid-column:span 2}.control-scroll{display:grid;grid-template-columns:repeat(2,1fr);gap:0 16px;overflow:visible}.status-strip{grid-template-columns:repeat(2,1fr)}.task-layout,.pagegrid{grid-template-columns:1fr}.task-library{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:650px){.shell{display:block}.sidebar{height:58px;position:sticky;top:0;padding:7px;flex-direction:row;overflow:auto;gap:5px}.logo{padding:0 10px 0 2px}.logo-mark{height:35px;width:35px}.nav{flex-direction:row}.nav-btn{width:35px;flex-shrink:0}.sidebar-footer,.section-label{display:none}.topbar{height:48px;padding:0 12px}.top-right>.badge,.breadcrumbs span:nth-child(-n+3){display:none}.content{padding:17px 12px}.headline{align-items:flex-start}.headline h1{font-size:21px}.header-actions{flex-wrap:wrap;justify-content:end}.status-strip{gap:8px}.status-tile{padding:10px}.grid-main{display:grid;grid-template-columns:1fr;grid-template-rows:360px 365px auto auto auto}.controls{grid-row:auto;grid-column:auto}.control-scroll{display:block}.task-library{grid-template-columns:1fr}.formgrid{grid-template-columns:1fr}.kpi-grid{grid-template-columns:repeat(2,1fr)}}
-</style></head>
+</style>
+<link rel="stylesheet" href="debug_skills.css">
+</head>
 <body>
 <svg style="position:absolute;width:0;height:0;overflow:hidden" xmlns="http://www.w3.org/2000/svg">
 <symbol id="ico-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
@@ -76,7 +78,108 @@
 <!-- DATASET -->
 <section id="page-dataset" class="page"><div class="headline"><div><div class="overline">ROBOT LEARNING / DATASETS</div><h1>Dataset & VLA Studio</h1><p>Design demonstration capture and prepare an eventual LeRobot-compatible workflow.</p></div><div class="header-actions"><span class="badge blue">LEARNING-READY LAYOUT</span><button class="btn primary" id="mockRecord"><svg class="icon"><use href="#ico-play"/></svg> Preview recording</button></div></div><div class="kpi-grid" style="margin-bottom:15px"><div class="kpi"><small>Saved episodes</small><b>0</b><span class="chip">Prototype only</span></div><div class="kpi"><small>Camera channels</small><b>1</b><span class="chip blue">Wrist RGB</span></div><div class="kpi"><small>Target policy</small><b style="font-size:17px">SmolVLA</b><span class="chip">Future integration</span></div></div><div class="pagegrid"><div class="stack"><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-db"/></svg> Demonstration Recorder</div><div class="card-desc">Configure future episode capture</div></div><span class="badge muted">INACTIVE</span></div><div class="card-pad" style="padding-top:0"><div class="formgrid"><div><label class="form-label">Task instruction</label><input class="field" value="Pick up the red block and place it at B" id="datasetTask"></div><div><label class="form-label">Capture frequency</label><select class="field" id="datasetFps"><option>10 FPS</option><option selected>15 FPS</option><option>20 FPS</option><option>30 FPS</option></select></div></div><div class="setting-list" style="margin-top:12px"><div class="setting-item"><div><strong>Eye-in-hand RGB video</strong><small>observation.images.wrist</small></div><input class="switch" type="checkbox" checked></div><div class="setting-item"><div><strong>Joint states & TCP pose</strong><small>robot state + synchronized timestamps</small></div><input class="switch" type="checkbox" checked></div><div class="setting-item"><div><strong>Gripper actions & feedback</strong><small>Unavailable until PGC connection is validated</small></div><input class="switch" type="checkbox" disabled></div></div><div class="editor-msg" style="margin-top:13px">Recording controls here only preview interface states; they do not write robot demonstrations or transmit commands. A synchronized backend is required for actual VLA data capture.</div></div></div><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-folder"/></svg> Episode Library</div><div class="card-desc">Local design preview · currently empty</div></div><span class="badge muted">0 ITEMS</span></div><div class="empty-state"><svg class="icon xl" style="color:#bdcbe0"><use href="#ico-folder"/></svg><p>No recorded episodes.</p><span class="small-caption">Episodes will appear here when a backend is integrated.</span></div></div></div><div class="stack"><div class="card"><div class="card-head"><div class="card-title"><svg class="icon"><use href="#ico-robot"/></svg> Policy Deployment</div></div><div class="card-pad" style="padding-top:0"><div class="data-line"><span>Policy</span><strong>SmolVLA · placeholder</strong></div><div class="data-line"><span>Model weights</span><strong>Not loaded</strong></div><div class="data-line"><span>Inference backend</span><strong>None</strong></div><div class="data-line"><span>Action validator</span><strong>Not configured</strong></div><button class="btn full" style="margin-top:14px" id="mockLoadPolicy">Choose model weights</button></div></div><div class="card"><div class="card-head"><div class="card-title"><svg class="icon"><use href="#ico-info"/></svg> Data Quality Checklist</div></div><div class="card-pad" style="padding-top:0"><div class="data-line"><span>Camera timestamps</span><strong>Planned</strong></div><div class="data-line"><span>Robot feedback alignment</span><strong>Planned</strong></div><div class="data-line"><span>Action representation</span><strong>Undecided</strong></div><div class="data-line"><span>Episode success label</span><strong>Planned</strong></div></div></div></div></div></section>
 <!-- DEBUG -->
-<section id="page-debug" class="page"><div class="headline"><div><div class="overline">ENGINEERING / DIAGNOSTICS</div><h1>Debug & Telemetry</h1><p>Joint telemetry, raw events, connection diagnostics, and gripper troubleshooting.</p></div><div class="header-actions"><span class="badge muted">SIMULATED JOINTS</span><button class="btn" id="resetDebug"><svg class="icon"><use href="#ico-refresh"/></svg> Reset pose</button></div></div><div class="pagegrid"><div class="stack"><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-pulse"/></svg> Joint Telemetry · 6 Axes</div><div class="card-desc">Range limits from Nova 2 product spec · UI simulation, not live state</div></div><span class="badge blue">J1 – J6</span></div><div class="card-pad" style="padding-top:0"><div id="jointSliders"></div></div></div><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-sliders"/></svg> Controller Diagnostics</div><div class="card-desc">No network requests initiated</div></div><span class="badge orange">DISCONNECTED</span></div><div class="card-pad" style="padding-top:0"><div class="formgrid"><div class="data-line"><span>Robot model</span><strong>Nova 2</strong></div><div class="data-line"><span>Command port</span><strong>29999</strong></div><div class="data-line"><span>Feedback port</span><strong>30004 (V4)</strong></div><div class="data-line"><span>PGC interface</span><strong>RS485 / Modbus RTU</strong></div></div><div class="editor-msg" style="margin-top:11px">Before live deployment, verify V3/V4 firmware compatibility and confirm the CCBOX RS485 interface supports the required operations.</div></div></div></div><div class="stack"><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-clock"/></svg> Activity & Event Log</div><div class="card-desc">Local preview interactions only</div></div><button class="btn sm" id="clearLogs">Clear</button></div><div class="card-pad" style="padding-top:0"><div class="debug-log" id="debugLog"></div><div class="small-caption" style="margin-top:9px">Hardware alerts and robot feedback will appear here when a backend is connected.</div></div></div><div class="card"><div class="card-head"><div class="card-title"><svg class="icon"><use href="#ico-shield"/></svg> System Health</div></div><div class="card-pad" style="padding-top:0"><div class="data-line"><span>Robot communication</span><strong>Offline</strong></div><div class="data-line"><span>ROS2 bridge</span><strong>Not configured</strong></div><div class="data-line"><span>Motion feedback</span><strong>Unavailable</strong></div><div class="data-line"><span>Gripper initialization</span><strong>Unknown</strong></div><div class="data-line"><span>Camera device</span><strong id="debugCamera">Preview only</strong></div></div></div></div></div></section>
+<section id="page-debug" class="page"><div class="headline"><div><div class="overline">ENGINEERING / DIAGNOSTICS</div><h1>Debug & Telemetry</h1><p>Joint telemetry, raw events, connection diagnostics, and gripper troubleshooting.</p></div><div class="header-actions"><span class="badge orange">LIVE HARDWARE</span><button class="btn" id="resetDebug"><svg class="icon"><use href="#ico-refresh"/></svg> Reset pose</button></div></div>
+<!-- ===== LIVE ROBOT SKILLS (logic: ui/debug_skills.js · styles: ui/debug_skills.css) ===== -->
+<div class="sk-panel">
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title"><svg class="icon"><use href="#ico-robot"/></svg> Live Robot · Primitive Skills</div>
+        <div class="card-desc">Buttons here move the real Nova 2 and gripper · src/actions/primitives.py</div>
+      </div>
+      <div class="card-tools">
+        <span class="badge muted" id="skConn">CONNECTING…</span>
+        <button class="btn sk-stop" id="skStop" title="Halt motion and clear the queue"><svg class="icon"><use href="#ico-stop"/></svg> STOP</button>
+      </div>
+    </div>
+    <div class="card-pad sk-grid" style="padding-top:0">
+
+      <!-- live state -->
+      <section class="sk-box">
+        <h4>Robot state</h4>
+        <div class="sk-chips" id="skFlags"></div>
+        <div class="sk-readout" id="skPose"></div>
+        <div class="sk-readout" id="skJoints"></div>
+        <h4>Gripper</h4>
+        <div class="sk-line" id="skGripper">Not connected — press Open/Close to connect.</div>
+      </section>
+
+      <!-- safety + gripper -->
+      <section class="sk-box">
+        <h4>Safety</h4>
+        <label class="sk-arm"><input type="checkbox" class="switch" id="skArm">
+          <span><strong>Workspace clear</strong><br><small>Required for every motion button</small></span></label>
+        <div class="sk-row" style="margin-top:8px">
+          <button class="btn sm sk-motion" data-system="power_on" title="Mode 3 (arm power off) → power the arm, wait ~10 s">Power on</button>
+          <button class="btn sm sk-motion" data-system="enable" title="Release brakes (needs Workspace clear)">Enable</button>
+          <button class="btn sm" data-system="clear">Clear alarm</button>
+          <button class="btn sm" data-system="disable">Disable</button>
+        </div>
+        <label class="sk-label">Speed <strong id="skSpeedVal">20%</strong></label>
+        <input type="range" id="skSpeed" min="1" max="100" value="20">
+        <h4>Gripper</h4>
+        <div class="sk-row">
+          <button class="btn soft sk-motion" data-skill="open_gripper">Open</button>
+          <button class="btn soft sk-motion" data-skill="close_gripper">Close</button>
+        </div>
+        <label class="sk-label">Position <strong id="skGripPosVal">500</strong> <small>(0 closed · 1000 open)</small></label>
+        <div class="sk-row">
+          <input type="range" id="skGripPos" min="0" max="1000" step="10" value="500">
+          <button class="btn sm sk-motion" id="skGripSet">Set</button>
+        </div>
+        <label class="sk-label">Force <strong id="skForceVal">30%</strong></label>
+        <input type="range" id="skForce" min="20" max="100" value="30">
+      </section>
+
+      <!-- jog -->
+      <section class="sk-box">
+        <h4>Cartesian jog <small>move_relative</small></h4>
+        <div class="sk-row">
+          <select class="field sk-mini" id="skFrame"><option value="base">Base frame</option><option value="tool">Tool frame</option></select>
+          <input class="field sk-mini" id="skStepMm" type="number" min="0.1" max="100" step="0.5" value="10"><span class="sk-unit">mm</span>
+        </div>
+        <div class="sk-jog" id="skCartJog"></div>
+        <h4>Joint jog <small>jog_joint</small></h4>
+        <div class="sk-row">
+          <input class="field sk-mini" id="skStepDeg" type="number" min="0.1" max="20" step="0.5" value="5"><span class="sk-unit">deg</span>
+        </div>
+        <div class="sk-jog" id="skJointJog"></div>
+        <div class="sk-row" style="margin-top:10px">
+          <button class="btn sm sk-motion" data-skill="go_to_position" data-args='{"name":"home"}'>Go home</button>
+          <button class="btn sm" id="skSaveBtn">Save position…</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title"><svg class="icon"><use href="#ico-cam"/></svg> Cameras</div>
+        <div class="card-desc">MJPEG from ui/app.py · streams only while this tab is open · captures go to data/captures/</div>
+      </div>
+      <span class="badge muted" id="skCamBadge">—</span>
+    </div>
+    <div class="card-pad sk-cams" style="padding-top:0" id="skCams"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title"><svg class="icon"><use href="#ico-sliders"/></svg> All Primitive Skills</div>
+        <div class="card-desc">Generated from /api/skills · add a primitive in actions/registry.py and it appears here</div>
+      </div>
+      <button class="btn sm" id="skReload"><svg class="icon"><use href="#ico-refresh"/></svg> Reload</button>
+    </div>
+    <div class="card-pad" style="padding-top:0">
+      <div class="sk-skills" id="skSkills"><div class="sk-line">Loading skills…</div></div>
+      <h4 class="sk-result-title">Last result</h4>
+      <pre class="sk-result" id="skResult">—</pre>
+    </div>
+  </div>
+</div>
+<!-- ===== /LIVE ROBOT SKILLS ===== -->
+<div class="pagegrid"><div class="stack"><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-pulse"/></svg> Joint Telemetry · 6 Axes</div><div class="card-desc">Range limits from Nova 2 product spec · UI simulation, not live state</div></div><span class="badge blue">J1 – J6</span></div><div class="card-pad" style="padding-top:0"><div id="jointSliders"></div></div></div><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-sliders"/></svg> Controller Diagnostics</div><div class="card-desc">No network requests initiated</div></div><span class="badge orange">DISCONNECTED</span></div><div class="card-pad" style="padding-top:0"><div class="formgrid"><div class="data-line"><span>Robot model</span><strong>Nova 2</strong></div><div class="data-line"><span>Command port</span><strong>29999</strong></div><div class="data-line"><span>Feedback port</span><strong>30004 (V4)</strong></div><div class="data-line"><span>PGC interface</span><strong>RS485 / Modbus RTU</strong></div></div><div class="editor-msg" style="margin-top:11px">Before live deployment, verify V3/V4 firmware compatibility and confirm the CCBOX RS485 interface supports the required operations.</div></div></div></div><div class="stack"><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-clock"/></svg> Activity & Event Log</div><div class="card-desc">Local preview interactions only</div></div><button class="btn sm" id="clearLogs">Clear</button></div><div class="card-pad" style="padding-top:0"><div class="debug-log" id="debugLog"></div><div class="small-caption" style="margin-top:9px">Hardware alerts and robot feedback will appear here when a backend is connected.</div></div></div><div class="card"><div class="card-head"><div class="card-title"><svg class="icon"><use href="#ico-shield"/></svg> System Health</div></div><div class="card-pad" style="padding-top:0"><div class="data-line"><span>Robot communication</span><strong>Offline</strong></div><div class="data-line"><span>ROS2 bridge</span><strong>Not configured</strong></div><div class="data-line"><span>Motion feedback</span><strong>Unavailable</strong></div><div class="data-line"><span>Gripper initialization</span><strong>Unknown</strong></div><div class="data-line"><span>Camera device</span><strong id="debugCamera">Preview only</strong></div></div></div></div></div></section>
 <!-- SETTINGS -->
 <section id="page-settings" class="page"><div class="headline"><div><div class="overline">SYSTEM / CONFIGURATION</div><h1>Settings</h1><p>Review backend configuration fields, safety expectations and workspace preferences.</p></div><div class="header-actions"><span class="badge blue">LOCAL SETTINGS</span><button class="btn primary" id="settingsSave">Save UI preferences</button></div></div><div class="pagegrid"><div class="stack"><div class="card"><div class="card-head"><div><div class="card-title"><svg class="icon"><use href="#ico-robot"/></svg> Robot Connection</div><div class="card-desc">Form values only · no connection established</div></div></div><div class="card-pad" style="padding-top:0"><div class="formgrid"><div><label class="form-label">Robot model</label><input class="field" value="Dobot Nova 2" readonly></div><div><label class="form-label">Driver protocol</label><select class="field" id="protoVersion"><option>V3 · Dashboard 29999 / Motion 30003</option><option>V4 · Dashboard + Motion 29999</option></select></div><div><label class="form-label">Controller IP</label><input class="field" id="robotIp" value="192.168.5.1"></div><div><label class="form-label">Command port</label><input class="field" value="29999" readonly></div><div><label class="form-label">Feedback port (V4)</label><input class="field" value="30004" readonly></div><div><label class="form-label">Gripper</label><input class="field" value="DH Robotics PGC-50-35" readonly></div></div><div class="editor-msg" style="margin-top:14px">These are form placeholders based on published Dobot interfaces. Nothing is transmitted when you edit or save them.</div></div></div><div class="card"><div class="card-head"><div class="card-title"><svg class="icon"><use href="#ico-cam"/></svg> Camera & Coordinate Frames</div></div><div class="card-pad" style="padding-top:0"><div class="formgrid"><div><label class="form-label">Camera</label><input class="field" value="USB Webcam · Eye-in-Hand" readonly></div><div><label class="form-label">Reference frame</label><select class="field"><option>Robot base</option><option>Tool</option><option>Camera optical</option></select></div><div><label class="form-label">Position units</label><input class="field" value="millimetres (mm)" readonly></div><div><label class="form-label">Joint units</label><input class="field" value="degrees (°)" readonly></div></div></div></div></div><div class="stack"><div class="card"><div class="card-head"><div class="card-title"><svg class="icon"><use href="#ico-gear"/></svg> Workspace Preferences</div></div><div class="card-pad" style="padding-top:0"><div class="setting-list"><div class="setting-item"><div><strong>White & blue theme</strong><small>Minimal high-contrast controls</small></div><input class="switch" type="checkbox" checked disabled></div><div class="setting-item"><div><strong>Remember UI tab</strong><small>Prototype session only</small></div><input class="switch" id="rememberTab" type="checkbox" checked></div><div class="setting-item"><div><strong>Show simulated joint labels</strong><small>All six axes on 3D view</small></div><input class="switch" id="jointLabelSwitch" type="checkbox" checked></div></div></div></div><div class="card"><div class="card-head"><div class="card-title"><svg class="icon"><use href="#ico-shield"/></svg> Safety & Deployment</div></div><div class="card-pad" style="padding-top:0"><p class="small-caption">Before connecting a live robot: implement exclusive command ownership, verified controller mode, motion limits, safety-rated protection, watchdogs, physical stop behavior, gripper feedback and collision-aware planning.</p><div class="badge red" style="margin-top:12px">NO LIVE MOTION IN THIS PROTOTYPE</div></div></div></div></div></section>
 </main></div></div><div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -121,4 +224,7 @@ async function toggleCam(){if(camOn){stopCam();return}if(!navigator.mediaDevices
 function stopCam(){camOn=false;stream?.getTracks().forEach(t=>t.stop());stream=null;vid.srcObject=null;$('camBadge').textContent='PREVIEW';$('camLive').innerHTML='<span class="dot"></span> DEMO FRAME';$('cameraToggleText').textContent='Start camera';$('cameraSummary').textContent='Demo image';$('cameraHint').innerHTML='Vision pipeline ready<small>Connect browser webcam to preview live footage</small>';$('visionCamBtn').textContent='Start webcam';$('visionCamStatus').textContent='DEMO SOURCE';$('camFPS').textContent='0 FPS';$('redTarget').textContent='1 detected · demo';$('greenTarget').textContent='1 detected · demo';$('debugCamera').textContent='Preview only';makeDemo(cc,cam.width,cam.height);drawVision();eventLog('CAM','Camera stopped; demo frame restored')}
 $('cameraToggle').onclick=toggleCam;$('visionCamBtn').onclick=toggleCam;$('overlaySwitch').onchange=e=>{overlay=e.target.checked;$('visionOverlayStatus').textContent=overlay?'DETECTION ON':'DETECTION OFF';if(!camOn){makeDemo(cc,cam.width,cam.height);drawVision()}};$('crosshairSwitch').onchange=e=>{crosshair=e.target.checked;if(!camOn){makeDemo(cc,cam.width,cam.height);drawVision()}};$('pipelineSelect').onchange=e=>{if(!e.target.value.startsWith('HSV')){notify('AI model backend not integrated; retaining HSV visual preview')}else notify('HSV preview pipeline selected')};$('visionSnapshot').onclick=()=>{try{cam.toBlob(blob=>{const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='nova2-webcam-preview.png';a.click();setTimeout(()=>URL.revokeObjectURL(u),800);eventLog('CAM','Snapshot of preview frame exported')},'image/png')}catch(e){notify('Snapshot not available')}};
 makeDemo(cc,cam.width,cam.height);drawVision();syncQ();renderQueue();renderPoints();renderSliders();renderTeach();eventLog('INFO','Nova 2 design prototype opened; no hardware backend');eventLog('INFO','Six-axis visualization and 7 UI tabs ready');setTimeout(resizeRobot,250);window.addEventListener('beforeunload',()=>stream?.getTracks().forEach(t=>t.stop()));
-</script></body></html>
+</script>
+<script src="debug_skills.js"></script>
+<script src="debug_cameras.js"></script>
+</body></html>

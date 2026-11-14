@@ -11,13 +11,16 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # run without `pip install -e .`
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "src"), str(ROOT)]  # run without `pip install -e .`
 
+from actions.primitives import create_primitives  # noqa: E402
 from actions.robot_actions import RobotActions  # noqa: E402
 from actions.validation import require_confirm  # noqa: E402
 from common.config import load_robot_config  # noqa: E402
@@ -25,14 +28,21 @@ from common.errors import RobotError, ValidationError  # noqa: E402
 from common.log import get_logger, setup_logging  # noqa: E402
 from common.paths import UI_DIR  # noqa: E402
 from drivers.nova2 import Nova2  # noqa: E402
+from drivers.camera_stream import CameraHub  # noqa: E402
+from ui.camera_api import BOUNDARY, CameraAPI  # noqa: E402
+from ui.skills_api import SkillsAPI  # noqa: E402
 
 log = get_logger("ui")
 MAX_BODY = 5_500_000
 JPEG_PREFIX = "data:image/jpeg;base64,"
+# Static assets next to index.html that the browser may load.
+STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
 
 
 class Handler(BaseHTTPRequestHandler):
     actions: RobotActions
+    skills: SkillsAPI
+    cameras: CameraAPI
 
     def log_message(self, fmt, *args):
         log.debug(fmt, *args)
@@ -56,24 +66,92 @@ class Handler(BaseHTTPRequestHandler):
             raise ValidationError("Dữ liệu không hợp lệ.")
         return value
 
+    def send_file(self, path: Path, content_type: str):
+        body = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     # -- GET -------------------------------------------------------------
     def do_GET(self):
         if self.path == "/":
-            page = (UI_DIR / "index.html").read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(page)))
-            self.end_headers()
-            self.wfile.write(page)
+            self.send_file(UI_DIR / "index.html", "text/html; charset=utf-8")
             return
-        if self.path == "/api/state":
+        static = self.static_path()
+        if static is not None:
+            self.send_file(static, STATIC_TYPES[static.suffix])
+            return
+        if self.path.startswith("/api/cameras/"):
+            self.get_camera()
+            return
+        live = {"/api/state": self.actions.state, "/api/skills/state": self.skills.state,
+                "/api/skills": self.skills.catalogue, "/api/cameras": self.cameras.status}.get(self.path)
+        if live is not None:
             try:
-                self.respond(HTTPStatus.OK, self.actions.state())
+                self.respond(HTTPStatus.OK, live())
             except (OSError, RobotError, ValueError) as exc:
-                log.warning("state: %s", exc)
+                log.warning("%s: %s", self.path, exc)
                 self.respond(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
         self.respond(HTTPStatus.NOT_FOUND, {"error": "Không tìm thấy."})
+
+    # -- cameras -----------------------------------------------------------
+    def camera_route(self) -> tuple[str, str]:
+        """/api/cameras/<name>/<action> -> (name, action)."""
+        parts = self.path.split("?", 1)[0].strip("/").split("/")
+        if len(parts) != 4:
+            raise ValidationError("Không tìm thấy.")
+        return parts[2], parts[3]
+
+    def get_camera(self):
+        try:
+            name, action = self.camera_route()
+            self.cameras.require(name)
+            if action == "stream":
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={BOUNDARY}")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                try:
+                    self.cameras.stream_mjpeg(name, self.wfile)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass   # browser closed the window / switched tab
+                return
+            if action == "frame.jpg":
+                jpeg = self.cameras.frame(name)
+                if jpeg is None:
+                    self.respond(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Camera chưa có hình."})
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpeg)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(jpeg)
+                return
+            self.respond(HTTPStatus.NOT_FOUND, {"error": "Không tìm thấy."})
+        except (RobotError, ValueError) as exc:
+            self.respond(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+
+    def post_camera(self, data: dict) -> dict:
+        name, action = self.camera_route()
+        if action == "capture":
+            return self.cameras.capture(name, data)
+        if action == "device":
+            return self.cameras.select_device(name, data)
+        raise ValidationError("Thao tác camera không hợp lệ.")
+
+    def static_path(self) -> Path | None:
+        """Plain file names in ui/ with an allowed extension; nothing else."""
+        name = self.path.lstrip("/")
+        if "/" in name or "\\" in name or name.startswith("."):
+            return None
+        path = UI_DIR / name
+        return path if path.suffix in STATIC_TYPES and path.is_file() else None
 
     # -- POST ------------------------------------------------------------
     def do_POST(self):
@@ -84,8 +162,12 @@ class Handler(BaseHTTPRequestHandler):
             "/api/gripper": self.post_gripper,
             "/api/positions": self.post_positions,
             "/api/inspection": self.post_inspection,
+            "/api/skills/run": self.skills.run,
+            "/api/skills/system": self.skills.system,
         }
         route = routes.get(self.path)
+        if route is None and self.path.startswith("/api/cameras/"):
+            route = self.post_camera
         if route is None:
             self.respond(HTTPStatus.NOT_FOUND, {"error": "Không tìm thấy."})
             return
@@ -153,6 +235,11 @@ def main():
     setup_logging()
 
     Handler.actions = RobotActions(Nova2(args.ip, cfg.timeout_s), cfg)
+    Handler.skills = SkillsAPI(create_primitives(actions=Handler.actions))
+    hub = CameraHub(cfg.cameras)
+    if os.environ.get("NOVA2_DEPTH") == "1" and "env" in hub:
+        hub.select_device("env", "realsense", 0)     # scripts/run_ui.sh --depth
+    Handler.cameras = CameraAPI(hub, robot_state=Handler.skills.state)
     server = ThreadingHTTPServer((cfg.ui_host, args.port), Handler)
     log.info("Nova 2 Control: http://%s:%d  (robot %s)", cfg.ui_host, args.port, args.ip)
     try:
@@ -160,6 +247,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        hub.stop_all()
         server.server_close()
 
 

@@ -22,7 +22,20 @@ workspace:
   y: [-600, 600]
   z: [0, 700]
 
+motion:                  # primitive skills (src/actions/primitives.py)
+  joint_limits_deg: [360, 180, 156, 360, 360, 360]
+  max_relative_mm: 100   # largest move_relative translation per call
+  max_relative_deg: 45
+  default_speed: 20      # % when a skill call omits speed
+  arrive_tol_mm: 1.0
+  arrive_tol_deg: 0.5
+  move_timeout_s: 30     # robot is stopped if a move doesn't arrive in time
+  home_joints: [0, 0, 90, 0, 90, 0]   # PLACEHOLDER — teach a real 'home' with save_position
+
 gripper:                 # DH-Robotics PGC over RS485 (Modbus RTU)
+  tool_length_mm: 118    # flange -> fingertip (mm), measured 11.8 cm; pick/place skills add it
+  transport: direct      # direct = USB–RS485 adapter on this Mac; controller = via Nova 2
+  port: null             # null = auto-detect /dev/cu.usbserial-*
   slave_id: 1
   baud: 115200
   parity: N
@@ -30,3 +43,23 @@ gripper:                 # DH-Robotics PGC over RS485 (Modbus RTU)
   speed: 50              # 1–100 %
   open_position: 1000    # ‰ of stroke
   closed_position: 0
+
+# Camera windows in the Debug tab, streamed at `fps` to the browser.
+# macOS numbers cameras in an order that changes when devices are plugged in, so
+# pick the device from the dropdown in each window; the choice is remembered in
+# data/memory/cameras.json and overrides `index` here.
+cameras:
+  env:
+    label: "Environment · RealSense D455"
+    source: opencv       # opencv = D455 colour as a webcam (no sudo); realsense = colour + depth (needs pyrealsense2, sudo on macOS)
+    index: 1
+    width: 1280
+    height: 720
+    fps: 10
+  wrist:
+    label: "Wrist · USB webcam"
+    source: opencv
+    index: 0
+    width: 640
+    height: 480
+    fps: 10

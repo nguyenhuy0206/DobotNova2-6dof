@@ -1,18 +1,33 @@
 """Agent harness: model ⇄ tools loop with logging to an episode file.
 
-    task ─► Astra ─► function_call(s) ─► ActionExecutor (dry_run/confirm/live)
-              ▲                                    │
-              └──────── function_call_output ◄─────┘
+    task ─► Astra ─► tool call(s) ─► chunk policy ─► ActionExecutor ─► event router
+              ▲                                                            │
+              └──── context (chain | bounded) + selected images ◄──────────┘
 
-Every step is appended to data/episodes/<id>.jsonl for replay and learning.
+Variants (config: harness.variant, see HarnessOptions.from_variant):
+  V0 baseline     previous_response_id chain, every image, every proposed call runs
+  V1 compression  bounded context (state + digest + last turns), selective images
+  V2 chunking     baseline context, adaptive action horizon (agent/chunking.py)
+  V3 combined     V1 + V2
+Safety never depends on the variant: every action still goes through the executor
+and the primitives' checks. Every step and every model request's token usage is
+appended to data/episodes/<id>.jsonl.
 """
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from actions.executor import ActionExecutor
 from agent.astra_client import AstraClient
+from agent.chunking import ChunkPolicy
+from agent.context import ContextPolicy, WorkingMemory
+from agent.events import EventRouter, aborts_chunk, digest_line
+from agent.metrics import EpisodeMetrics, usage_of
 from agent.tools import to_openai_tools
+from agent.vision import ImagePolicy
 from common.config import AgentConfig
 from common.log import get_logger
 from memory.skills import SkillLibrary
@@ -22,51 +37,283 @@ log = get_logger(__name__)
 
 DEFAULT_INSTRUCTIONS = (
     "You control a Dobot Nova 2 six-axis arm with a PGC gripper and an RGB-D camera. "
-    "Only act through the provided tools. Always call get_robot_state before moving. "
-    "Use small, conservative motions. If a tool returns an error, stop and explain."
+    "Only act through the provided tools; each motion tool blocks until it has finished. "
+    "Perceive before acting: use look / find_objects to locate things (base_xyz_mm is in robot "
+    "coordinates), and get_state before moving. Prefer existing skills (list_skills, run_skill) "
+    "over long chains of primitives. After a task succeeds, verify with look, then save_skill "
+    "the sequence that worked. Use conservative speeds. If a tool returns an error, do not retry "
+    "blindly: call get_state and look, then explain or adjust."
+    " Poses are FINGERTIP positions (the gripper length is handled for you). To work on an object, "
+    "point the gripper straight down (rx=180, ry=0) and use the object's base_xyz_mm: hover at "
+    "z = object z + 100, never below the object's top surface unless grasping."
+    " The arm often hides objects from the env camera when it is above them: then use last_seen "
+    "from find_objects, or call search_object (it rotates J1 back and forth and looks again)."
 )
+
+CHUNK_HINT = (
+    "\n\nACTION CHUNKS: you may return up to {L} tool calls in one turn; they run in order, one after "
+    "another. The harness runs fewer when that is safer (inside the approach zone, after a gripper "
+    "action or skill, after any error) and tells you which calls were NOT executed. Batch routine "
+    "steps (e.g. free-space move + look) instead of one call per turn."
+)
+BOUNDED_HINT = (
+    "\n\nCONTEXT: every request is self-contained: TASK, STATE measured by the harness, a digest of the "
+    "episode so far, your last turns and the results of your last calls. Earlier images are not "
+    "repeated; look results always contain the detected objects as data, and an image is attached "
+    "only when it adds information (look with image='always' if you need to see)."
+)
+
+
+@dataclass
+class HarnessOptions:
+    variant: str = "V0"
+    context: ContextPolicy = field(default_factory=lambda: ContextPolicy(mode="chain"))
+    chunk: ChunkPolicy = field(default_factory=lambda: ChunkPolicy(enabled=False))
+    images: ImagePolicy = field(default_factory=lambda: ImagePolicy(mode="all"))
+    max_episode_tokens: int = 0        # 0 = no cap; else stop the episode when reached
+
+    @classmethod
+    def from_variant(cls, variant: str = "V0", **cfg) -> "HarnessOptions":
+        variant = variant.upper()
+        if variant not in ("V0", "V1", "V2", "V3"):
+            raise ValueError("harness variant must be V0, V1, V2 or V3")
+        bounded, chunked = variant in ("V1", "V3"), variant in ("V2", "V3")
+        return cls(variant=variant,
+                   context=ContextPolicy(mode="bounded" if bounded else "chain",
+                                         recent_turns=int(cfg.get("recent_turns", 4)),
+                                         summary_max_chars=int(cfg.get("summary_max_chars", 4000))),
+                   chunk=ChunkPolicy(enabled=chunked, max_horizon=max(1, min(4, int(cfg.get("max_horizon", 4))))),
+                   images=ImagePolicy(mode="selective" if bounded else "all",
+                                      env_detail=cfg.get("env_image_detail", "low"),
+                                      wrist_detail=cfg.get("wrist_image_detail", "high")),
+                   max_episode_tokens=int(cfg.get("max_episode_tokens", 0) or 0))
 
 
 class AgentHarness:
     def __init__(self, client: AstraClient, executor: ActionExecutor, config: AgentConfig,
-                 episodes: EpisodeStore | None = None, skills: SkillLibrary | None = None):
+                 episodes: EpisodeStore | None = None, skills: SkillLibrary | None = None,
+                 send_images: bool = True, notes=None, options: HarnessOptions | None = None,
+                 state_fn=None, skill_runner=None):
         self.client = client
+        self.notes = notes          # memory.notes.NotesStore: lessons from earlier runs
         self.executor = executor
         self.config = config
         self.episodes = episodes or EpisodeStore()
         self.skills = skills or SkillLibrary()
+        self.send_images = send_images
+        self.options = options or HarnessOptions()
+        self.state_fn = state_fn        # () -> compact measured state for the bounded context
+        self.skill_runner = skill_runner
+        self.last_episode: str | None = None
+        self.last_metrics: dict | None = None
+        self.last_turn: dict = {}
+
+    # ------------------------------------------------------------------ helpers
+    def _take_image(self, episode: str, step: int, name: str, result: dict) -> str | None:
+        """Remove a camera image from a tool result (keeps the text output small),
+        save it next to the episode, and return it."""
+        payload = result.get("result")
+        if not isinstance(payload, dict) or "image_jpeg_b64" not in payload:
+            return None
+        image = payload.pop("image_jpeg_b64")
+        path = self.episodes.save_image(episode, f"{step:03d}-{name}.jpg", image)
+        payload["image_file"] = str(path)
+        return image
 
     def _instructions(self, task: str) -> str:
         text = self.config.system_prompt or DEFAULT_INSTRUCTIONS
         recalled = self.skills.search(task)
         if recalled:
             text += "\n\nRelevant skills from memory:\n" + "\n".join(
-                f"- {s.name}: {s.description} steps={json.dumps(s.steps)}" for s in recalled)
+                f"- {s.name} v{s.version} [{s.validation_status}]: {s.description} params={json.dumps(s.params)}"
+                + ("" if self.options.context.mode == "bounded" else f" steps={json.dumps(s.steps)}")
+                for s in recalled)
+        if self.notes:
+            lessons = (self.notes.digest() if self.options.context.mode == "bounded" and hasattr(self.notes, "digest")
+                       else self.notes.recent_text())
+            if lessons:
+                text += "\n\nYour notes from earlier runs (facts you measured; re-check if they look wrong):\n" + lessons
+        if self.options.chunk.enabled:
+            text += CHUNK_HINT.format(L=self.options.chunk.max_horizon)
+        if self.options.context.mode == "bounded":
+            text += BOUNDED_HINT
         return text
 
-    def run(self, task: str) -> str:
-        episode = self.episodes.start(task, {"model": self.config.model, "mode": self.executor.mode})
+    def _state(self) -> dict | None:
+        if self.state_fn is None:
+            return None
+        try:
+            return self.state_fn()
+        except Exception as exc:  # noqa: BLE001 — the state is context, never a reason to crash
+            return {"state_error": str(exc)[:160]}
+
+    def _create(self, episode: str, step: int, metrics: EpisodeMetrics, n_images: int, **kw):
+        t0 = time.time()
+        response = self.client.create(**kw)
+        rec = metrics.add_request(usage_of(response), time.time() - t0, n_images)
+        self.episodes.append(episode, {"event": "usage", "step": step, **rec})
+        return response
+
+    def _tool_zone(self) -> tuple[float | None, float | None]:
+        st = self._state() or {}
+        pose = st.get("pose")
+        return (pose[2] if isinstance(pose, list) and len(pose) > 2 else None), st.get("approach_zone_top")
+
+    # ------------------------------------------------------------------ main loop
+    def run(self, task: str, images: list[str] | None = None) -> str:
+        """images: base64 JPEGs shown with the task (e.g. evidence for a review)."""
+        opt = self.options
+        episode = self.episodes.start(task, {"model": self.config.model, "mode": self.executor.mode,
+                                             "variant": opt.variant})
+        self.last_episode = episode
+        if self.skill_runner is not None:
+            self.skill_runner.episode = episode
+        metrics = EpisodeMetrics(variant=opt.variant)
+        router = EventRouter()
+        images_policy = ImagePolicy(**{k: getattr(opt.images, k) for k in ("mode", "env_detail", "wrist_detail",
+                                                                           "same_threshold")})
         tools = to_openai_tools(self.executor.list())
-        response = self.client.create(task, tools=tools, instructions=self._instructions(task))
+        # The Responses API does NOT carry `instructions` over through previous_response_id,
+        # so they are sent with every call (identical text -> served from the prompt cache).
+        instructions = self._instructions(task)
+        bounded = opt.context.mode == "bounded"
+        wm = WorkingMemory(task, opt.context)
+
+        def image_part(img: str, camera: str | None) -> dict:
+            part = {"type": "input_image", "image_url": f"data:image/jpeg;base64,{img}"}
+            if images_policy.mode == "selective":
+                part["detail"] = images_policy.detail(camera or "env")
+            return part
+
+        start_images = [image_part(i, None) for i in images or []]
+        if bounded:
+            first = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(self._state())},
+                                                  *start_images]}]
+        else:
+            first = task if not images else [{"role": "user", "content": [
+                {"type": "input_text", "text": task}, *start_images]}]
+        response = self._create(episode, 0, metrics, len(start_images), input=first, tools=tools,
+                                instructions=instructions)
+        reason, final = "max_steps", None
 
         for step in range(self.config.max_steps):
             calls = [item for item in response.output if getattr(item, "type", None) == "function_call"]
-            self.episodes.append(episode, {"event": "model", "step": step, "response_id": response.id,
+            self.episodes.append(episode, {"event": "model", "step": step, "response_id": getattr(response, "id", None),
                                            "text": response.output_text, "calls": len(calls)})
             if not calls:
-                self.episodes.append(episode, {"event": "end", "reason": "done"})
-                return response.output_text
+                reason, final = "done", response.output_text
+                break
+            metrics.tool_calls += len(calls)
 
-            outputs = []
+            parsed = []
             for call in calls:
-                args = json.loads(call.arguments or "{}")
-                result = self.executor.execute(call.name, args)
-                log.info("tool %s(%s) -> %s", call.name, args, result)
+                try:
+                    args, bad = json.loads(call.arguments or "{}"), None
+                except json.JSONDecodeError:
+                    # usually output cut off by max_output_tokens: tell the model, don't crash
+                    args, bad = {"_raw": (call.arguments or "")[:200]}, True
+                parsed.append(SimpleNamespace(name=call.name, call_id=call.call_id, parsed_args=args, bad=bad))
+            tip_z, zone_top = self._tool_zone() if opt.chunk.enabled else (None, None)
+            run_now, deferred, why = opt.chunk.split(parsed, tip_z, zone_top)
+
+            outputs, sent_images, executed, digests = [], [], [], []
+            aborted = False
+            for i, call in enumerate(run_now):
+                if aborted:
+                    deferred = list(run_now[i:]) + deferred
+                    why = why or "an earlier call in this turn failed or needs your attention"
+                    break
+                if call.bad:
+                    result = {"ok": False, "action": call.name, "executed": False,
+                              "error": "arguments were not valid JSON (cut off?) — send a shorter call"}
+                else:
+                    if call.name == "run_skill":
+                        router.handling = ((call.parsed_args.get("params") or {}).get("color") or router.handling)
+                    result = self.executor.execute(call.name, call.parsed_args)
+                metrics.add_action(call.name, result)
+                image = self._take_image(episode, step, call.name, result)
+                events = router.classify(call.name, call.parsed_args, result)
+                if image is not None and self.send_images:
+                    camera = (result.get("result") or {}).get("camera")
+                    send, img_reason = images_policy.decide(call.parsed_args, result.get("result") or {},
+                                                            router.wants_image(camera))
+                    if send:
+                        images_policy.sent(camera, image)
+                        router.image_delivered(camera)
+                        sent_images.append((image, camera))
+                    else:
+                        metrics.images_withheld += 1
+                    result["result"]["image"] = ("attached" if send else "not attached") + f" ({img_reason})"
+                log.info("tool %s(%s) -> ok=%s", call.name, call.parsed_args, result.get("ok"))
                 self.episodes.append(episode, {"event": "tool", "step": step, "name": call.name,
-                                               "args": args, "result": result})
+                                               "args": call.parsed_args, "result": result,
+                                               "events": [e.as_dict() for e in events]})
+                executed.append((call.name, call.parsed_args, result))
+                digests.append(digest_line(step, call.name, call.parsed_args, result, events))
+                if result.get("ok") and call.name == "run_skill" and (result.get("result") or {}).get("ok"):
+                    p = (call.parsed_args.get("params") or {})
+                    if "place" in call.parsed_args.get("name", "") and p.get("color"):
+                        wm.progress.append(f"{p['color']} placed at ({p.get('x')}, {p.get('y')}) — skill verified")
                 outputs.append({"type": "function_call_output", "call_id": call.call_id,
                                 "output": json.dumps(result, ensure_ascii=False, default=str)})
-            response = self.client.create(outputs, tools=tools, previous_response_id=response.id)
+                if opt.chunk.enabled and aborts_chunk(events):
+                    aborted = True
+            self.last_turn = {"executed": len(executed), "deferred": len(deferred), "reason": why}
+            if deferred:
+                metrics.actions_deferred += len(deferred)
+                self.episodes.append(episode, {"event": "deferred", "step": step, "reason": why,
+                                               "calls": [c.name for c in deferred]})
+                for c in deferred:
+                    outputs.append({"type": "function_call_output", "call_id": c.call_id,
+                                    "output": json.dumps({"ok": False, "executed": False,
+                                                          "error": f"not executed: {why}"})})
+            # camera images the router asked for but no look delivered: say so in the context
+            if router.stop_reason:
+                reason, final = "robot_alarm", f"Stopped: {router.stop_reason}"
+                break
+            if opt.max_episode_tokens and metrics.tokens_so_far() >= opt.max_episode_tokens:
+                reason, final = "token_budget", (f"Stopped: token budget {opt.max_episode_tokens} reached "
+                                                 f"({metrics.tokens_so_far()} used).")
+                break
 
-        self.episodes.append(episode, {"event": "end", "reason": "max_steps"})
-        return f"Stopped after max_steps={self.config.max_steps}. Last: {response.output_text}"
+            # Something unexpected and no fresh image of it yet: the harness looks itself
+            # (read-only, no model call) instead of making Astra spend a turn on it.
+            auto = []
+            if bounded and self.send_images and "look" in self.executor.specs:
+                for camera in sorted(router.pending_image):
+                    colors = [router.handling] if router.handling else None
+                    r = self.executor.execute("look", {"camera": camera, **({"colors": colors} if colors else {})})
+                    img = self._take_image(episode, step, f"auto-look-{camera}", r)
+                    router.classify("look", {"camera": camera, "colors": colors or []}, r)
+                    router.image_delivered(camera)
+                    self.episodes.append(episode, {"event": "tool", "step": step, "name": "look", "auto": True,
+                                                   "args": {"camera": camera, "colors": colors}, "result": r})
+                    if img is not None:
+                        images_policy.sent(camera, img)
+                        sent_images.append((img, camera))
+                        r["result"]["image"] = "attached (taken by the harness after the unexpected event)"
+                    auto.append((f"look[auto:{camera}]", {"camera": camera}, r))
+                metrics.auto_looks += len(auto)
+
+            img_parts = [image_part(img, cam) for img, cam in sent_images]
+            if bounded:
+                wm.record_turn(step, response.output_text, executed + auto, deferred, why, digests)
+                extra = ""
+                msg = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(self._state(), extra)},
+                                                    *img_parts]}]
+                response = self._create(episode, step + 1, metrics, len(img_parts), input=msg, tools=tools,
+                                        instructions=instructions)
+            else:
+                if img_parts:
+                    # Images go in a user message right after the tool outputs.
+                    outputs.append({"role": "user", "content": [
+                        {"type": "input_text", "text": "Camera image(s) from the tool call(s) above:"}, *img_parts]})
+                response = self._create(episode, step + 1, metrics, len(img_parts), input=outputs, tools=tools,
+                                        previous_response_id=response.id, instructions=instructions)
+
+        if final is None:
+            final = f"Stopped after max_steps={self.config.max_steps}. Last: {response.output_text}"
+        self.episodes.append(episode, {"event": "end", "reason": reason})
+        self.last_metrics = metrics.summary()
+        self.episodes.append(episode, {"event": "metrics", **self.last_metrics})
+        return final

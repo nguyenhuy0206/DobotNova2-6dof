@@ -1,20 +1,38 @@
-"""PGC gripper over RS485 / Modbus RTU, tunnelled through the Nova 2 controller.
+"""DH-Robotics PGC gripper over RS485 / Modbus RTU.
 
-Registers (DH-Robotics PGC):
-  0x0100 init (write 0xA5)   0x0101 force %   0x0103 position ‰   0x0104 speed %
-  0x0200 initialized         0x0201 state     0x0202 actual position
+Two transports with the same public API:
+  * ``PGCGripper``       — tunnelled through the Nova 2 controller (dashboard Modbus)
+  * ``PGCGripperDirect`` — straight from this computer via a USB–RS485 adapter
+                           (e.g. FT232R at /dev/cu.usbserial-*), no controller involved
+
+Only one Modbus master may drive the bus at a time — don't use both at once.
+
+Registers:
+  0x0100 init: 1 = initialize (home), 0xA5 = full recalibration
+  0x0101 force %   0x0103 position ‰ (0 closed … 1000 open)   0x0104 speed %
+  0x0200 init status: 0 not initialized, 1 initialized, 2 initializing
+  0x0201 grip state:  0 moving, 1 arrived (no object), 2 object caught, 3 object dropped
+  0x0202 actual position ‰
 """
 from __future__ import annotations
 
+import glob
 import re
+import threading
+import time
 
 from common.errors import RobotError
 from drivers.nova2 import Nova2
 
 REG_INIT, REG_FORCE, REG_POSITION, REG_SPEED = 0x0100, 0x0101, 0x0103, 0x0104
 REG_STATUS_BASE = 0x0200
-INIT_VALUE = 0xA5
+REG_INIT_STATUS, REG_GRIP_STATE, REG_ACTUAL_POSITION = 0x0200, 0x0201, 0x0202
+INIT_VALUE = 0xA5            # full recalibration (controller route keeps this)
+INIT_HOME = 0x01             # normal initialize
 VALID_BAUDS = {4800, 9600, 19200, 38400, 57600, 115200}
+
+INIT_STATUS = {0: "not initialized", 1: "initialized", 2: "initializing"}
+GRIP_STATE = {0: "moving", 1: "arrived (no object)", 2: "object caught", 3: "object dropped"}
 
 
 class PGCGripper:
@@ -76,6 +94,19 @@ class PGCGripper:
                 "speed": self._write(REG_SPEED, speed),
                 "position": self._write(REG_POSITION, position)}
 
+    # Same simple API as PGCGripperDirect (no motion wait on this route).
+    def init(self, force_reinit: bool = False, full: bool = True) -> dict:
+        return {"response": self.initialize()}
+
+    def go_to(self, position: int, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        return {"position": position, **self.move(position, force, speed)}
+
+    def open(self, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        return self.go_to(1000, force, speed, wait)
+
+    def close(self, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        return self.go_to(0, force, speed, wait)
+
     def disconnect(self) -> str:
         master = self._require_master()
         try:
@@ -83,3 +114,192 @@ class PGCGripper:
         finally:
             self.master = None
             self.transport = None
+
+
+# ---------------------------------------------------------------------------
+# Direct Modbus RTU (USB–RS485 adapter)
+# ---------------------------------------------------------------------------
+
+def crc16_modbus(data: bytes) -> int:
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc
+
+
+def rtu_frame(pdu: bytes) -> bytes:
+    """Append the Modbus CRC (little-endian) to slave+function+data."""
+    return pdu + crc16_modbus(pdu).to_bytes(2, "little")
+
+
+def check_rtu_response(response: bytes, slave_id: int, function: int, expected_len: int) -> bytes:
+    if len(response) >= 5 and response[1] == function | 0x80:
+        raise RobotError(f"PGC Modbus exception code {response[2]} (function 0x{function:02X})")
+    if len(response) != expected_len:
+        raise RobotError(f"PGC: expected {expected_len} bytes, got {len(response)}: {response.hex(' ') or 'NO RESPONSE'}")
+    if int.from_bytes(response[-2:], "little") != crc16_modbus(response[:-2]):
+        raise RobotError(f"PGC: CRC error in {response.hex(' ')}")
+    if response[0] != slave_id or response[1] != function:
+        raise RobotError(f"PGC: unexpected reply {response.hex(' ')}")
+    return response
+
+
+def find_usb_serial_port() -> str:
+    ports = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/ttyUSB*"))
+    if not ports:
+        raise RobotError("No USB–RS485 adapter found (/dev/cu.usbserial-*).")
+    return ports[0]
+
+
+class PGCGripperDirect:
+    """PGC driven straight over RS485 from this computer (pyserial).
+
+    Typical use::
+
+        with PGCGripperDirect() as g:   # connects, auto-detects the port
+            g.init()                    # no-op if already initialized
+            g.open()
+            g.close()                   # close fingers; returns grip status
+    """
+
+    def __init__(self, port: str | None = None, timeout: float = 0.5):
+        self.port_name = port
+        self.timeout = timeout
+        self.serial = None
+        self.slave_id = 1
+        self.transport: str | None = None
+        self._io_lock = threading.Lock()   # one request/response on the bus at a time
+
+    @property
+    def connected(self) -> bool:
+        return self.serial is not None and self.serial.is_open
+
+    def connect(self, slave_id: int = 1, baud: int = 115200, parity: str = "N") -> dict:
+        import serial  # pyserial
+
+        if not 1 <= slave_id <= 247 or baud not in VALID_BAUDS:
+            raise RobotError("Cấu hình RS485 không hợp lệ.")
+        if parity not in {"N", "O", "E"}:
+            raise RobotError("Parity phải là N, O hoặc E.")
+        self._close_port()
+        port = self.port_name or find_usb_serial_port()
+        try:
+            self.serial = serial.Serial(port, baud, bytesize=8, parity=parity, stopbits=1, timeout=self.timeout)
+        except serial.SerialException as exc:
+            raise RobotError(f"Cannot open {port}: {exc}") from exc
+        self.port_name, self.slave_id = port, slave_id
+        self.transport = f"direct RTU {port} {baud} 8{parity}1"
+        # Probe so a wrong port/baud/slave fails here, not on the first move.
+        return {"transport": self.transport, "slave_id": slave_id, **self.status()}
+
+    # -- Modbus primitives ----------------------------------------------
+    def _transact(self, request: bytes, expected_len: int) -> bytes:
+        if not self.connected:
+            raise RobotError("Chưa kết nối PGC qua RS485.")
+        frame = rtu_frame(request)
+        with self._io_lock:
+            self.serial.reset_input_buffer()
+            self.serial.write(frame)
+            self.serial.flush()
+            response = self.serial.read(expected_len)
+            if len(response) >= 3 and response[1] & 0x80:   # exception replies are 5 bytes
+                response += self.serial.read(max(0, 5 - len(response)))
+        return check_rtu_response(response, self.slave_id, request[1], expected_len)
+
+    def read_registers(self, address: int, count: int) -> list[int]:
+        request = bytes([self.slave_id, 0x03]) + address.to_bytes(2, "big") + count.to_bytes(2, "big")
+        response = self._transact(request, 5 + 2 * count)
+        return [int.from_bytes(response[3 + 2 * i:5 + 2 * i], "big") for i in range(count)]
+
+    def write_register(self, address: int, value: int) -> None:
+        request = bytes([self.slave_id, 0x06]) + address.to_bytes(2, "big") + value.to_bytes(2, "big")
+        response = self._transact(request, 8)
+        if response[:6] != request:
+            raise RobotError(f"PGC: write echo mismatch {response.hex(' ')}")
+
+    # -- gripper API (same shape as PGCGripper) --------------------------
+    def status(self) -> dict:
+        init, state, position = self.read_registers(REG_STATUS_BASE, 3)
+        return {"initialized": init, "init_status": INIT_STATUS.get(init, f"unknown ({init})"),
+                "grip_state": state, "grip_status": GRIP_STATE.get(state, f"unknown ({state})"),
+                "position": position}
+
+    def initialize(self, full: bool = False, wait: bool = True, timeout: float = 15.0) -> dict:
+        self.write_register(REG_INIT, INIT_VALUE if full else INIT_HOME)
+        if not wait:
+            return self.status()
+        deadline = time.monotonic() + timeout
+        time.sleep(0.3)
+        while time.monotonic() < deadline:
+            status = self.status()
+            if status["initialized"] == 1:
+                return status
+            time.sleep(0.2)
+        raise RobotError("PGC initialization timed out.")
+
+    def move(self, position: int, force: int, speed: int) -> dict:
+        if not 0 <= position <= 1000 or not 20 <= force <= 100 or not 1 <= speed <= 100:
+            raise RobotError("PGC: position 0–1000, force 20–100, speed 1–100.")
+        if self.read_registers(REG_INIT_STATUS, 1)[0] != 1:
+            raise RobotError("PGC chưa initialize — gọi initialize() trước.")
+        self.write_register(REG_FORCE, force)
+        self.write_register(REG_SPEED, speed)
+        self.write_register(REG_POSITION, position)
+        return {"position": position, "force": force, "speed": speed}
+
+    def wait_motion(self, timeout: float = 5.0) -> dict:
+        """Poll until the fingers stop; grip_state tells whether an object was caught."""
+        deadline = time.monotonic() + timeout
+        time.sleep(0.15)   # state reads 'arrived' briefly before motion starts
+        while time.monotonic() < deadline:
+            status = self.status()
+            if status["grip_state"] in (1, 2, 3):
+                return status
+            time.sleep(0.05)
+        raise RobotError("PGC motion timed out.")
+
+    # -- simple reusable API ---------------------------------------------
+    def init(self, force_reinit: bool = False, full: bool = False) -> dict:
+        """Initialize only if needed (after power-up); ``force_reinit`` always does it."""
+        status = self.status()
+        if status["initialized"] == 1 and not force_reinit:
+            return status
+        return self.initialize(full=full)
+
+    def go_to(self, position: int, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        """Move fingers to 0 (closed) … 1000 (open) and, by default, wait until they stop."""
+        self.move(position, force, speed)
+        return self.wait_motion() if wait else self.status()
+
+    def open(self, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        return self.go_to(1000, force, speed, wait)
+
+    def close(self, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        """Close fingers until an object stops them (grip_state 2) or fully closed (1)."""
+        return self.go_to(0, force, speed, wait)
+
+    grip = close
+
+    def is_holding(self) -> bool:
+        return self.status()["grip_state"] == 2
+
+    # -- connection lifecycle -------------------------------------------
+    def _close_port(self) -> None:
+        if self.serial is not None:
+            self.serial.close()
+        self.serial = None
+
+    def disconnect(self) -> str:
+        self._close_port()
+        self.transport = None
+        return "serial closed"
+
+    def __enter__(self) -> "PGCGripperDirect":
+        if not self.connected:
+            self.connect()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.disconnect()

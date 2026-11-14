@@ -1,0 +1,23 @@
+# Perception used by the Astra tools (look, find_objects) and camera calibration.
+
+# OpenCV HSV ranges per colour (H 0–179, S/V 0–255). Red wraps around 0 -> two ranges.
+# Tune with real lighting: scripts/calibrate_env_camera.py --tune shows the masks.
+colors:
+  red:    [[[0, 120, 70], [10, 255, 255]], [[170, 120, 70], [179, 255, 255]]]
+  orange: [[[11, 130, 120], [22, 255, 255]]]          # between red (0–10) and yellow (20–35)
+  green:  [[[40, 80, 60], [85, 255, 255]]]
+  blue:   [[[95, 120, 60], [130, 255, 255]]]
+  yellow: [[[20, 100, 100], [35, 255, 255]]]
+  white:  [[[0, 0, 200], [179, 40, 255]]]
+
+min_area_px: 50           # blocks on the box are ~70–220 px in the 640×480 D455 view
+depth_window_px: 5        # median depth over a (2n+1)^2 window around the object centre
+
+env_helper_url: http://127.0.0.1:8766   # D455 colour+depth (scripts/run_ui.sh --depth)
+ui_url: http://127.0.0.1:8765           # other cameras via the running UI (e.g. wrist)
+
+# camera -> robot base transform for the D455 (written by scripts/calibrate_env_camera.py)
+env_calibration_file: data/memory/hand_eye_env.json
+
+send_images_to_model: true   # attach the camera image when Astra calls `look`
+image_max_width: 640

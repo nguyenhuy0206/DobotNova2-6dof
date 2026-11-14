@@ -1,0 +1,73 @@
+# Explore mode: Astra learns the cell by itself with primitive tools only.
+#   scripts/run_explore.sh            (needs scripts/run_vision.sh running in another terminal)
+# Model, API key, speed cap: config/agent.yaml. Robot limits: config/robot.yaml.
+
+task: >
+  Move ALL THREE cubes (blue, green, yellow) from the top of the white box onto free spots of the
+  metal table, one at a time, each verified by the env camera. Use run_skill pick_block_wrist (one call
+  per grasp attempt) and run_skill place_block_on_table (spots ≥ 60 mm apart). A failed attempt is
+  data: change one thing (rz ±15–30 so the edges are square to the fingers, depth_mm, x/y) and retry,
+  at most 4 attempts per cube. Finish with one env look and a short report: which cubes are on the
+  table, attempts per cube and the settings that worked.
+
+execution_mode: live      # live | confirm (ask y/N on every motion) | dry_run
+max_steps: 60             # model calls per episode (a skill call runs many steps locally)
+max_output_tokens: 2000
+
+harness:                  # token-efficient harness (agent/harness.py) — same safety in every variant
+  variant: V3             # V0 baseline · V1 bounded context · V2 action chunks · V3 both
+  recent_turns: 4         # last model turns kept verbatim
+  summary_max_chars: 4000 # rolling episode digest (≈1000 tokens, deterministic, no LLM)
+  max_horizon: 4          # most robot actions per proposal in free space (1 in contact, ≤2 aligning)
+  env_image_detail: low   # env images are only for overview; detections come as data
+  wrist_image_detail: high
+  max_episode_tokens: 400000   # stop the episode (not the robot mid-move) when reached; 0 = off
+
+skills:
+  require_validation: true      # candidate skills run live only after the operator says y
+  min_supervised_successes: 2   # --promote NAME needs this many supervised successes
+  builtin_pick_place: true      # pick_block_wrist / place_block_on_table (from episode 181222)
+reflect_max_steps: 6            # one reflection pass after each episode, ≤ 6 model calls
+
+episodes: 1               # attempts per run_explore.sh call (each followed by a self-review)
+
+gripper:
+  close_position: 500     # close_gripper stops at 50 % (0 = closed … 1000 = open); never closes further
+  open_position: 800      # open_gripper opens to 80 %: fully open fingers knocked neighbouring blocks
+
+view_guard:               # env camera (D455 colour) must always see the robot
+  enabled: true
+  marker_color: red       # coloured tape wrapped around the gripper body (not a task colour!)
+  min_area_px: 40
+
+collision_level: 3        # controller collision detection, 1 (least) … 5 (most sensitive); 0 = leave unchanged
+
+skills_file: data/memory/skills_explore.json   # Astra's own skills (no built-in seeds)
+
+allowed_tools:
+  # primitives
+  - get_state
+  - move_to_pose
+  - move_to_joints
+  - move_relative
+  - jog_joint
+  - go_to_position
+  - save_position
+  - open_gripper
+  - close_gripper
+  - set_gripper
+  - stop
+  # seeing
+  - look
+  - find_objects
+  - check_robot_in_view
+  # self-calibration of the env camera
+  - record_calibration_point
+  - solve_calibration
+  - reset_calibration
+  # learning
+  - list_skills
+  - run_skill
+  - save_skill
+  - write_note
+  - read_notes

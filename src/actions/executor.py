@@ -32,6 +32,8 @@ class ActionSpec:
     parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {}, "required": []})
     moves_robot: bool = False   # motion or gripper actuation
     read_only: bool = False     # safe to run even in dry_run (e.g. get_state)
+    delegates: bool = False     # runs other tools through this executor (run_skill): those
+                                # inner calls get dry_run/confirm, so don't gate the outer one
 
     def validate_args(self, args: dict) -> dict:
         """Light JSON-schema check: required keys, no unknown keys, basic types."""
@@ -52,6 +54,14 @@ class ActionSpec:
                 raise ValidationError(f"{self.name}.{key} phải thuộc {props[key]['enum']}")
             out[key] = value
         return out
+
+
+def _short(value, limit: int = 400) -> str:
+    """Log-friendly repr: images and long payloads are cut."""
+    if isinstance(value, dict) and "image_jpeg_b64" in value:
+        value = {**value, "image_jpeg_b64": f"<{len(value['image_jpeg_b64'])} b64 chars>"}
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _deny_all(name: str, args: dict) -> bool:
@@ -77,15 +87,25 @@ class ActionExecutor:
             return {"ok": False, "action": name, "executed": False, "error": f"Unknown action {name}"}
         try:
             clean = spec.validate_args(args)
-            if self.mode == "dry_run" and not spec.read_only:
+            if self.mode == "dry_run" and not (spec.read_only or spec.delegates):
                 log.info("[dry_run] %s %s", name, clean)
                 return {"ok": True, "action": name, "executed": False,
                         "result": f"DRY RUN: {name}({clean}) validated, not sent."}
-            if self.mode == "confirm" and spec.moves_robot and not self.confirm(name, clean):
+            if self.mode == "confirm" and spec.moves_robot and not spec.delegates and not self.confirm(name, clean):
                 return {"ok": False, "action": name, "executed": False, "error": "Operator rejected the action."}
             result = spec.handler(**clean)
-            log.info("%s %s -> %s", name, clean, result)
+            log.info("%s %s -> %s", name, clean, _short(result))
             return {"ok": True, "action": name, "executed": True, "result": result}
         except (RobotError, OSError, ValueError, TypeError) as exc:
             log.warning("%s %s failed: %s", name, args, exc)
             return {"ok": False, "action": name, "executed": False, "error": str(exc)}
+
+    def run_sequence(self, steps: list[dict], stop_on_error: bool = True) -> list[ActionResult]:
+        """Run [{"tool": name, "args": {...}}, …] — a composite skill built from primitives."""
+        results = []
+        for step in steps:
+            result = self.execute(step["tool"], step.get("args", {}))
+            results.append(result)
+            if stop_on_error and not result["ok"]:
+                break
+        return results

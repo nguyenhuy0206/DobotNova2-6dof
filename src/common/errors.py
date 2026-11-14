@@ -15,3 +15,7 @@ class ValidationError(RobotError):
 
 class SafetyError(RobotError):
     """The robot is not in a state where motion is allowed."""
+
+
+class ContactError(ValidationError):
+    """A slow approach move was blocked by something (the robot stopped and backed off)."""

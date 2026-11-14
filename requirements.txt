@@ -4,5 +4,6 @@ pyrealsense2; sys_platform != "darwin"
 numpy
 opencv-python
 pyyaml
+pyserial
 openai
 pytest

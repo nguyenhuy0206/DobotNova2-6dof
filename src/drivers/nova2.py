@@ -71,8 +71,23 @@ def parse_feedback(data: bytes) -> Feedback:
     }
 
 
+def _braced_numbers(raw: str, count: int, command: str) -> list[float]:
+    """'0,{a,b,c},Cmd(...);' -> [a, b, c]."""
+    start, end = raw.find("{"), raw.find("}")
+    try:
+        values = [float(x) for x in raw[start + 1:end].split(",")] if 0 <= start < end else []
+    except ValueError:
+        values = []
+    if len(values) != count:
+        raise RobotError(f"{command}: unexpected reply {raw!r}")
+    return values
+
+
 def format_values(values: list[float], fmt: str = "g") -> str:
-    return ",".join(f"{value:{fmt}}" for value in values)
+    def one(value: float) -> str:
+        text = f"{value:{fmt}}"
+        return text.lstrip("-") if float(text) == 0 else text   # never "-0.0000"
+    return ",".join(one(value) for value in values)
 
 
 class Nova2:
@@ -116,6 +131,10 @@ class Nova2:
         return raw or "Đã gửi vào motion queue."
 
     # -- dashboard commands ---------------------------------------------
+    def power_on(self) -> str:
+        """Power the arm (mode 3 → 4). Takes ~10 s before EnableRobot() is accepted."""
+        return self.dashboard("PowerOn()")
+
     def enable(self) -> str:
         return self.dashboard("EnableRobot()")
 
@@ -131,9 +150,53 @@ class Nova2:
     def speed_factor(self, speed: int) -> str:
         return self.dashboard(f"SpeedFactor({speed})")
 
+    def set_collision_level(self, level: int) -> str:
+        """Controller collision detection: 0 = off, 1–5 = more sensitive."""
+        return self.dashboard(f"SetCollisionLevel({int(level)})")
+
+    def positive_solution(self, joints: list[float], user: int = 0, tool: int = 0) -> list[float]:
+        """Forward kinematics on the controller: joints (deg) -> [X,Y,Z,Rx,Ry,Rz].
+
+        tool=0 gives the bare FLANGE, whatever tool is active. (The feedback pose
+        and Cartesian Mov* commands use the controller's *active* tool instead.)
+        """
+        raw = self.dashboard(f"PositiveSolution({format_values(joints, '.4f')},{user},{tool})")
+        return _braced_numbers(raw, 6, "PositiveSolution")
+
+    def inverse_solution(self, pose: list[float], user: int = 0, tool: int = 0) -> list[float]:
+        """Inverse kinematics on the controller: pose -> joints (deg)."""
+        try:
+            raw = self.dashboard(f"InverseSolution({format_values(pose, '.4f')},{user},{tool})")
+        except RobotError as exc:
+            from common.errors import ValidationError
+            raise ValidationError(f"pose not reachable (no inverse-kinematics solution): {exc}") from None
+        return _braced_numbers(raw, 6, "InverseSolution")
+
     # -- motion commands (no validation here; see actions.validation) --
     def rel_joint_movj(self, deltas: list[float], speed: int) -> str:
         return self.motion(f"RelJointMovJ({format_values(deltas)},SpeedJ={speed},AccJ={speed})")
 
     def joint_movj(self, joints: list[float], speed: int) -> str:
         return self.motion(f"JointMovJ({format_values(joints, '.4f')},SpeedJ={speed},AccJ={speed})")
+
+    # Cartesian commands (syntax per Dobot TCP-IP-Python-V3 SDK, user/tool frame 0).
+    # pose = [X, Y, Z mm, Rx, Ry, Rz deg] in the base frame.
+    # User/Tool are always named: the controller's implicit tool for motion commands
+    # is not stable (it changed after ResetRobot on this robot). Tool 0 = flange.
+    def movj(self, pose: list[float], speed: int, user: int = 0, tool: int = 0) -> str:
+        """Point-to-point to a Cartesian pose (joint-interpolated path)."""
+        return self.motion(f"MovJ({format_values(pose, '.4f')},User={user},Tool={tool},"
+                           f"SpeedJ={speed},AccJ={speed})")
+
+    def movl(self, pose: list[float], speed: int, user: int = 0, tool: int = 0) -> str:
+        """Straight-line TCP motion to a Cartesian pose."""
+        return self.motion(f"MovL({format_values(pose, '.4f')},User={user},Tool={tool},"
+                           f"SpeedL={speed},AccL={speed})")
+
+    def rel_movl_user(self, delta: list[float], speed: int, user: int = 0) -> str:
+        """Straight-line motion by an offset in a user frame (user 0 = robot base)."""
+        return self.motion(f"RelMovLUser({format_values(delta, '.4f')},{user},SpeedL={speed},AccL={speed})")
+
+    def rel_movl_tool(self, delta: list[float], speed: int, tool: int = 0) -> str:
+        """Straight-line motion by an offset expressed in the tool frame."""
+        return self.motion(f"RelMovLTool({format_values(delta, '.4f')},{tool},SpeedL={speed},AccL={speed})")

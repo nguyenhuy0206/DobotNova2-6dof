@@ -35,6 +35,27 @@ def check_pose_in_workspace(pose: list[float], ws: WorkspaceLimits) -> None:
             raise ValidationError(f"{axis}={value:.1f} mm nằm ngoài workspace [{lo}, {hi}].")
 
 
+def check_pose6(pose: list) -> list[float]:
+    if not isinstance(pose, list) or len(pose) != 6 or any(
+            isinstance(v, bool) or not isinstance(v, (int, float)) for v in pose):
+        raise ValidationError("Pose phải gồm 6 số: X, Y, Z (mm), Rx, Ry, Rz (độ).")
+    return [float(v) for v in pose]
+
+
+def check_joint_limits(joints: list[float], limits_deg: list[float]) -> None:
+    for i, (value, limit) in enumerate(zip(joints, limits_deg), start=1):
+        if abs(value) > limit:
+            raise ValidationError(f"J{i}={value:.1f}° vượt giới hạn ±{limit}°.")
+
+
+def check_relative(delta: list[float], max_mm: float, max_deg: float) -> None:
+    translation = sum(d * d for d in delta[:3]) ** 0.5
+    if translation > max_mm:
+        raise ValidationError(f"Dịch chuyển {translation:.1f} mm > tối đa {max_mm} mm mỗi lệnh.")
+    if any(abs(d) > max_deg for d in delta[3:]):
+        raise ValidationError(f"Xoay tối đa {max_deg}° mỗi lệnh.")
+
+
 def check_name(name: str, max_len: int = 40) -> str:
     name = str(name).strip()
     if not 1 <= len(name) <= max_len:

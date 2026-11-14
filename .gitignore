@@ -15,3 +15,10 @@ data/memory/*
 !data/**/.gitkeep
 
 .DS_Store
+
+# native builds (scripts/build_pyrealsense_mac.sh)
+third_party/
+
+# vendored Dobot SDK clone (reference only, has its own git):
+#   git clone https://github.com/Dobot-Arm/TCP-IP-Python-V3.git external/TCP-IP-Python-V3
+external/

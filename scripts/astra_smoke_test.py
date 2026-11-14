@@ -13,7 +13,9 @@ PROMPT = (
 if __name__ == "__main__":
     cfg = load_agent_config()
     try:
-        response = AstraClient(cfg).create(PROMPT)
+        client = AstraClient(cfg)
+        print("Key from:", client.key_source)
+        response = client.create(PROMPT)
         print("Model:", response.model)
         print("Response:", response.output_text)
         print("Usage:", response.usage)

@@ -12,11 +12,10 @@ from __future__ import annotations
 import argparse
 
 import _bootstrap  # noqa: F401
-from actions import ActionExecutor, RobotActions, build_registry
 from agent import AgentHarness, AstraClient
+from agent.toolkit import build_toolkit
 from common.config import load_agent_config, load_robot_config
 from common.log import setup_logging
-from drivers import Nova2
 
 
 def ask_operator(name: str, args: dict) -> bool:
@@ -34,12 +33,23 @@ def main() -> None:
     if args.mode:
         agent_cfg.execution_mode = args.mode
 
-    actions = RobotActions(Nova2(robot_cfg.ip, robot_cfg.timeout_s), robot_cfg)
-    executor = ActionExecutor(build_registry(actions), mode=agent_cfg.execution_mode,
-                              confirm=ask_operator, allowed=agent_cfg.allowed_tools)
-    harness = AgentHarness(AstraClient(agent_cfg), executor, agent_cfg)
-    print(f"[{agent_cfg.execution_mode}] {agent_cfg.model}")
-    print(harness.run(args.task))
+    executor, kit = build_toolkit(agent_cfg.execution_mode, ask_operator,
+                                  robot_cfg=robot_cfg, agent_cfg=agent_cfg)
+    harness = AgentHarness(AstraClient(agent_cfg), executor, agent_cfg, skills=kit.skills.library,
+                           send_images=kit.perception_cfg.send_images_to_model)
+    print(f"[{agent_cfg.execution_mode}] {agent_cfg.model} · max speed {agent_cfg.max_speed}% · "
+          "Ctrl+C = stop agent AND robot")
+    try:
+        print(harness.run(args.task))
+    except KeyboardInterrupt:
+        # A motion already sent keeps going unless the controller is told to stop.
+        print("\n!! Ctrl+C — stopping the robot")
+        try:
+            kit.primitives.stop()
+            print("Robot stopped (ResetRobot). Check it in the Debug tab before continuing.")
+        except Exception as exc:  # noqa: BLE001 — still exit; tell the operator loudly
+            print(f"!! STOP FAILED: {exc} — use the Debug tab STOP / emergency button NOW")
+        raise SystemExit(130)
 
 
 if __name__ == "__main__":
