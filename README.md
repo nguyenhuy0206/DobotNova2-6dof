@@ -3,6 +3,13 @@
 Local control, perception and an **Astra** LLM agent harness for a Dobot Nova 2
 (6-axis, V3 controller) with a PGC gripper and Intel RealSense D455, on macOS.
 
+## Demo
+
+[`result/astra_green_cube_20261112.mp4`](result/astra_green_cube_20261112.mp4): on 12 Nov 2026 Astra picked up the
+green cube by itself. In 3 trials it learned the wrist camera, lined up the fingers, recovered from a contact stop,
+and confirmed the grip with both cameras. The video is captioned with Astra's decisions;
+[`result/README.md`](result/README.md) has the timeline.
+
 ## Layout
 
 ```

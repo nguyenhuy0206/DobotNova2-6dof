@@ -22,3 +22,11 @@ third_party/
 # vendored Dobot SDK clone (reference only, has its own git):
 #   git clone https://github.com/Dobot-Arm/TCP-IP-Python-V3.git external/TCP-IP-Python-V3
 external/
+
+# reports stay local (history of the PDF report: local branch `report-local`)
+REPORT.md
+docs/
+
+# raw phone videos (only the compressed, captioned MP4 in result/ is published)
+*.MOV
+*.mov

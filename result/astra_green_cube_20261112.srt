@@ -1,0 +1,71 @@
+1
+00:00:00,000 --> 00:00:06,000
+Astra (AI) · live episode 2026-11-12 18:12
+Astra chose the GREEN cube to practise on
+
+2
+00:00:06,000 --> 00:00:48,000
+Learning the wrist camera:
+small moves + a look after each
+
+3
+00:00:48,000 --> 00:01:09,000
+Turns the gripper (+10°, then −40°)
+to square the fingers to the cube
+
+4
+00:01:09,000 --> 00:01:13,000
+Note saved: +10 mm sideways
+= cube moves ~56 px in the image
+
+5
+00:01:13,000 --> 00:01:39,000
+Centres the cube between the fingers
+using what it just learned
+
+6
+00:01:39,000 --> 00:01:50,000
+Trial 1: lowering in 19 mm steps
+
+7
+00:01:50,000 --> 00:02:06,000
+Contact at z = 62.8 mm → safety stop
+Astra logs it, lifts, shifts +15 mm
+
+8
+00:02:06,000 --> 00:02:36,000
+Trial 2: lowering again
+
+9
+00:02:36,000 --> 00:02:54,000
+Close → "object caught"
+Test lift of 15 mm
+
+10
+00:02:54,000 --> 00:03:17,000
+Cameras: cube still on the box
+→ trial 2 failed, Astra notes why
+
+11
+00:03:17,000 --> 00:03:51,000
+Trial 3: open, lift, shift another
++15 mm, lower to 8 mm below the top
+
+12
+00:03:51,000 --> 00:03:55,000
+Close → "object caught" (grip 776)
+
+13
+00:03:55,000 --> 00:04:22,000
+Test lift: wrist + overhead camera
+both confirm the cube is held ✓
+
+14
+00:04:22,000 --> 00:04:56,000
+Lesson saved: rz −30°, depth 8 mm
+Lifting to transfer height in steps
+
+15
+00:04:56,000 --> 00:05:08,300
+Next (after the clip): carry to the table,
+lower, release, camera confirms ✓
