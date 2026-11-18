@@ -99,15 +99,51 @@ class SkillLibrary:
         return skill
 
     def add_evidence(self, name: str, ok: bool, supervised: bool, failure: str | None = None,
-                     episode: str | None = None, keep: int = 20) -> None:
+                     episode: str | None = None, keep: int = 20, step: str | None = None,
+                     measured: dict | None = None) -> None:
         import time
         skill = self.get(name)
         if skill is None:
             return
-        skill.evidence = (skill.evidence + [{"t": time.strftime("%Y-%m-%d %H:%M:%S"), "ok": bool(ok),
-                                             "supervised": bool(supervised), "failure": failure,
-                                             "episode": episode}])[-keep:]
+        rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "ok": bool(ok), "supervised": bool(supervised),
+               "failure": failure, "episode": episode}
+        if step:
+            rec["step"] = step
+        if measured:
+            rec["measured"] = measured
+        skill.evidence = (skill.evidence + [rec])[-keep:]
         self.save(skill)
+
+    def quarantined(self, name: str, after: int = 3) -> dict | None:
+        """The CURRENT version failed its last `after` runs in a row (and never succeeded):
+        it must be revised (save_skill), rolled back or retired before it runs again."""
+        skill = self.get(name)
+        if skill is None or after <= 0 or skill.successes:
+            return None
+        last = skill.evidence[-after:]
+        if len(last) < after or any(e.get("ok") for e in last):
+            return None
+        return {"skill": name, "version": skill.version, "consecutive_failures": after,
+                "stats": self.failure_stats(name)}
+
+    def failure_stats(self, name: str) -> dict:
+        """Where and how the current version fails, with the measured numbers (no LLM)."""
+        skill = self.get(name)
+        if skill is None:
+            return {}
+        by_step: dict = {}
+        for e in skill.evidence:
+            if e.get("ok"):
+                continue
+            key = f"{e.get('step') or '?'}:{e.get('failure') or '?'}"
+            by_step[key] = by_step.get(key, 0) + 1
+        nums: dict = {}
+        for e in skill.evidence:
+            for k, v in (e.get("measured") or {}).items():
+                nums.setdefault(k, []).append(v)
+        return {"runs": len(skill.evidence), "ok": sum(1 for e in skill.evidence if e.get("ok")),
+                "failed_at": dict(sorted(by_step.items(), key=lambda kv: -kv[1])),
+                "measured": {k: v[-8:] for k, v in nums.items()}}
 
     def promote(self, name: str, min_supervised_successes: int = 2) -> dict:
         """Operator action only (never called by Astra): candidate -> validated, when the
@@ -122,6 +158,33 @@ class SkillLibrary:
         skill.validation_status = "validated"
         self.save(skill)
         return {"promoted": True, "name": name, "version": skill.version, "supervised_successes": ok}
+
+    def auto_promote(self, name: str, after: int) -> dict | None:
+        """Autonomous mode: a candidate whose CURRENT version succeeded (camera-verified
+        success conditions) in its last ``after`` runs, with no failure among them, becomes
+        validated. Counts restart with every new version, so a revision must earn it again."""
+        skill = self.get(name)
+        if skill is None or after <= 0 or skill.validation_status != "candidate":
+            return None
+        last = skill.evidence[-after:]
+        if len(last) < after or not all(e.get("ok") for e in last):
+            return None
+        skill.validation_status = "validated"
+        self.save(skill)
+        return {"promoted": True, "name": name, "version": skill.version, "after_successes": after}
+
+    def retire(self, name: str, reason: str = "") -> dict:
+        """Mark a skill deprecated (kept in the file with its history; run_skill refuses it)."""
+        skill = self.get(name)
+        if skill is None:
+            return {"retired": None, "known": [s.name for s in self.all()]}
+        if "builtin" in skill.tags:
+            raise ValueError(f"{name} is a built-in skill: save a new version or rollback_skill instead of retiring it")
+        skill.validation_status = "deprecated"
+        if reason:
+            skill.description = f"[retired: {reason[:120]}] " + skill.description
+        self.save(skill)
+        return {"retired": name, "version": skill.version}
 
     def rollback(self, name: str, version: int) -> dict:
         """Restore an earlier version's procedure as the newest version (history kept)."""
@@ -154,6 +217,18 @@ class SkillLibrary:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps([asdict(s) for s in skills], ensure_ascii=False, indent=2) + "\n",
                              encoding="utf-8")
+
+    def index(self) -> list[dict]:
+        """Verified facts about the usable skills (no descriptions): what exists and how its
+        CURRENT version has done. Deprecated skills are left out."""
+        out = []
+        for s in self.all():
+            if s.validation_status == "deprecated":
+                continue
+            out.append({"name": s.name, "version": s.version, "status": s.validation_status,
+                        "ok": s.successes, "fail": s.failures,
+                        "params": [k for k in s.params]})
+        return out
 
     def search(self, query: str, k: int = 3) -> list[Skill]:
         q = _tokens(query)

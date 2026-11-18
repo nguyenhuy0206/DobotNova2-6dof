@@ -7,7 +7,9 @@ Horizon L (number of robot-moving actions run from one proposal):
   * verified free-space motion (above the approach zone)          L ≤ max_horizon (4)
 Read-only calls (get_state, look, notes…) do not count, but after a verification
 boundary (close/open gripper, run_skill, calibration solve) no further MOTION runs:
-the result has to be seen first. Any error / unexpected event aborts the rest
+the result has to be seen first. A gripper call that cannot change anything (open_gripper
+when the fingers are already fully open, set_gripper to where they already are) is neither
+a boundary nor a counted motion. Any error / unexpected event aborts the rest
 (see agent.events.ABORTS_CHUNK). Actions run one after another, never in parallel,
 and every motion is still validated and confirmed by robot feedback in primitives.
 """
@@ -40,8 +42,10 @@ class ChunkPolicy:
             return 1                                      # going down near the block / table
         return min(2, self.max_horizon)                   # sideways / turning / lifting in the zone
 
-    def split(self, calls: list, tip_z: float | None, zone_top: float | None) -> tuple[list, list, str]:
-        """(calls to run now, calls deferred, reason). calls: objects with .name and parsed .args."""
+    def split(self, calls: list, tip_z: float | None, zone_top: float | None,
+              grip: float | None = None) -> tuple[list, list, str]:
+        """(calls to run now, calls deferred, reason). calls: objects with .name and parsed .args.
+        grip: measured gripper position (0 closed … 1000 open), to recognise no-op gripper calls."""
         if not self.enabled:
             return list(calls), [], ""
         run, limit, moves, z = [], self.max_horizon, 0, tip_z
@@ -50,7 +54,7 @@ class ChunkPolicy:
             name, args = call.name, getattr(call, "parsed_args", {}) or {}
             if len(run) >= self.max_calls:
                 return run, list(calls[i:]), f"at most {self.max_calls} calls per turn"
-            if name not in MOTION:
+            if name not in MOTION or _gripper_noop(name, args, grip):
                 run.append(call)
                 continue
             if crossed_boundary:
@@ -63,7 +67,19 @@ class ChunkPolicy:
             z = _target_z(name, args, z) if z is not None else None
             if name in BOUNDARY:
                 crossed_boundary = True
+            if name in ("close_gripper", "open_gripper", "set_gripper"):
+                grip = None                               # unknown until measured again
         return run, [], ""
+
+
+def _gripper_noop(name: str, args: dict, grip: float | None) -> bool:
+    if grip is None:
+        return False
+    if name == "open_gripper":
+        return grip >= 990
+    if name == "set_gripper" and isinstance(args.get("position"), (int, float)):
+        return abs(float(args["position"]) - grip) <= 5
+    return False
 
 
 def _target_z(name: str, args: dict, tip_z: float | None) -> float | None:

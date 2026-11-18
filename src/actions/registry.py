@@ -42,12 +42,19 @@ def _robot_specs(p: PrimitiveSkills) -> list[ActionSpec]:
              "description": f"Speed % (default {min(m.default_speed, top)}, max {top})"}
     num = {"type": "number"}
     force = {"type": "integer", "minimum": 20, "maximum": 100, "description": "Grip force %"}
-    gspeed = {"type": "integer", "minimum": 1, "maximum": 100, "description": "Finger speed %"}
+    gspeed = ({"type": "integer", "enum": [p.grip_speed], "description": f"fixed at {p.grip_speed} %"}
+              if p.grip_speed is not None else
+              {"type": "integer", "minimum": 1, "maximum": 100, "description": "Finger speed %"})
+    open_to = p.grip_open_position if p.grip_open_position is not None else 1000
+    at = f" at finger speed {p.grip_speed} %" if p.grip_speed is not None else ""
     ws = c.workspace
     return [
         ActionSpec("get_state",
-                   "Observe the robot: mode, alarm, moving, joints (deg), fingertip pose [X,Y,Z mm, Rx,Ry,Rz deg] "
-                   "(flange_pose too), gripper status and saved position names. Call before and after acting.",
+                   "Full robot state: mode, alarm, moving, joints (deg), fingertip pose [X,Y,Z mm, Rx,Ry,Rz deg], "
+                   "flange_pose, gripper status, table limits and saved position names. Every request already "
+                   "carries a STATE block measured just before it (mode, alarm, moving, fingertip pose, gripper "
+                   "position/status, table_z, approach_zone_top); this tool adds joints, flange_pose, the full "
+                   "gripper record and saved positions.",
                    p.get_state, _obj({}, []), read_only=True),
         ActionSpec("move_to_pose",
                    f"Move the gripper FINGERTIPS to an absolute pose in the robot base frame (the gripper "
@@ -86,13 +93,14 @@ def _robot_specs(p: PrimitiveSkills) -> list[ActionSpec]:
         ActionSpec("save_position",
                    "Remember the current pose under a name so it can be reused with go_to_position.",
                    p.save_position, _obj({"name": {"type": "string"}}, ["name"])),
-        ActionSpec("open_gripper", "Fully open the gripper fingers.",
+        ActionSpec("open_gripper", f"Open the fingers to position {open_to} of 1000"
+                   + (" (fully open)" if open_to == 1000 else "") + f"{at}.",
                    p.open_gripper, _obj({"force": force, "speed": gspeed}, []), moves_robot=True),
         ActionSpec("close_gripper",
                    ("Close the fingers until they hit an object" + (
                        f" or reach position {p.grip_close_position} (of 1000; they never close further)"
                        if p.grip_close_position is not None else " or are fully closed") +
-                    ". Result 'holding' is true when an object was caught."),
+                    f"{at}. Result 'holding' is true when an object was caught."),
                    p.close_gripper, _obj({"force": force, "speed": gspeed}, []), moves_robot=True),
         ActionSpec("set_gripper", "Move the fingers to a position: 0 = closed … 1000 = fully open.",
                    p.set_gripper,
@@ -110,8 +118,9 @@ def perception_specs(scene) -> list[ActionSpec]:
     return [
         ActionSpec("look",
                    "Take a picture with a camera and detect coloured objects. Returns every object with "
-                   "pixel position, bbox, angle_deg and, for the env camera when calibrated, base_xyz_mm (robot "
-                   "coordinates of its top surface). The annotated image is attached when it adds information "
+                   "pixel position, bbox, angle_deg (edge angle in the image, 0–90; only when measurable — absent "
+                   "for small blobs and for blobs cut by the image border, which carry cut_by_edge) and, for the "
+                   "env camera when calibrated, base_xyz_mm (robot coordinates of its top surface). The annotated image is attached when it adds information "
                    "(first view, unexpected event, ambiguous detection) — image='always' to force it, "
                    "'never' for data only.",
                    scene.look, _obj({"camera": camera, "colors": {"type": "array", "items": colors},
@@ -122,9 +131,9 @@ def perception_specs(scene) -> list[ActionSpec]:
                                     []),
                    read_only=True),
         ActionSpec("find_objects",
-                   "Detect objects of one colour (largest first). Use base_xyz_mm from the env camera as "
-                   "the x, y, z for pick_from_above / place_from_above. If nothing is visible it returns "
-                   "last_seen (where it was, seconds ago) — the arm often hides the object.",
+                   "Detect objects of one colour (largest first). Env camera: base_xyz_mm = position in the robot "
+                   "base frame (when calibrated). If nothing is visible it returns last_seen (where it was, "
+                   "seconds ago).",
                    scene.find_report,
                    _obj({"color": colors, "camera": camera}, ["color"]), read_only=True),
     ]
@@ -150,7 +159,7 @@ def skill_specs(runner) -> list[ActionSpec]:
                    f"{{check, args}} local checks {sorted(CHECKS)}, {{routine, args}} local loops {sorted(ROUTINES)}. "
                    "Args may use \"{param}\" or \"=expression\" (e.g. \"={z_top} + 30\"); table_z is "
                    "always available. params: defaults (null = required). recovery: only open_gripper / "
-                   "routine lift_to. Never hard-code one episode's coordinates: make them params.",
+                   "routine lift_to. list_routines shows every routine/check, including your own.",
                    runner.save,
                    _obj({"name": {"type": "string"}, "description": {"type": "string"},
                          "steps": {"type": "array", "items": step}, "params": {"type": "object"},

@@ -21,11 +21,13 @@ from pathlib import Path
 import numpy as np
 
 from common.errors import RobotError, ValidationError
+from common.log import get_logger
 from common.paths import MEMORY_DIR
 from perception.detection import detect_colored_objects
 from perception.transforms import HandEye, pose_to_matrix, rotation_angle_deg
 
 SESSION_FILE = MEMORY_DIR / "calibration_session.json"
+log = get_logger(__name__)
 
 
 def find_marker(scene, frame, color: str, min_area_px: float):
@@ -56,6 +58,10 @@ class SelfCalibration:
     """Env camera -> robot base, collected and solved by the agent at runtime."""
 
     MIN_POINTS = 6
+    # quality gate: a solve worse than this is NOT saved or used (camera moved, old points mixed in)
+    MAX_RMS_MM = 10.0
+    MAX_LOO_MEDIAN_MM = 15.0
+    MIN_Z_SPREAD_MM = 60.0
 
     def __init__(self, scene, primitives, color: str = "red", min_area_px: float = 40,
                  session_file: Path = SESSION_FILE):
@@ -63,18 +69,36 @@ class SelfCalibration:
         self.color, self.min_area = color, min_area_px
         self.session_file = session_file
         self.points: list[dict] = []
+        self.solution: dict | None = None     # accepted solve: marker offset + quality (for verify)
         if session_file.exists():
-            self.points = json.loads(session_file.read_text(encoding="utf-8")).get("points", [])
+            data = json.loads(session_file.read_text(encoding="utf-8"))
+            self.points, self.solution = data.get("points", []), data.get("solution")
 
     def _save_session(self) -> None:
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
-        self.session_file.write_text(json.dumps({"points": self.points}, indent=1) + "\n", encoding="utf-8")
+        self.session_file.write_text(json.dumps({"points": self.points, "solution": self.solution}, indent=1) + "\n",
+                                     encoding="utf-8")
 
     def reset(self) -> dict:
-        """Forget all recorded points (e.g. the camera was moved)."""
+        """Forget all recorded points (e.g. the camera was moved). The active calibration
+        stays until a new one is accepted or verify_calibration rejects it."""
         self.points = []
         self._save_session()
-        return {"points": 0}
+        return {"points": 0, "calibrated": self.scene.env_calibration is not None}
+
+    def _z_spread_mm(self) -> float:
+        zs = [p["flange_pose"][2] for p in self.points]
+        return (max(zs) - min(zs)) if zs else 0.0
+
+    def deactivate(self, reason: str) -> None:
+        """Stop using the current calibration (file kept as *.rejected-<time>.json)."""
+        self.scene.env_calibration = None
+        self.solution = None
+        self._save_session()
+        path = self.scene.cfg.calibration_path
+        if path.exists():
+            path.rename(path.with_name(f"{path.stem}.rejected-{time.strftime('%Y%m%d-%H%M%S')}.json"))
+        log.warning("env calibration deactivated: %s", reason[:200])
 
     def _rotation_spread_deg(self) -> float:
         Rs = [pose_to_matrix(p["flange_pose"])[:3, :3] for p in self.points]
@@ -149,6 +173,9 @@ class SelfCalibration:
             tips.append(f"record {need} more point(s)")
         if spread < 30:
             tips.append("vary the gripper orientation more (J4/J5/J6 by 15–20°) between points")
+        if len(self.points) >= 3 and self._z_spread_mm() < self.MIN_Z_SPREAD_MM:
+            tips.append(f"vary the HEIGHT more (z spread {self._z_spread_mm():.0f} mm, want ≥ {self.MIN_Z_SPREAD_MM:.0f}): "
+                        "include low points just above the approach zone near the box, else cube heights come out wrong")
         tips.append("spread points over the area you will work in (around the box and the free table)")
         return "; ".join(tips)
 
@@ -178,9 +205,22 @@ class SelfCalibration:
         except (ValueError, np.linalg.LinAlgError) as exc:
             raise RobotError(f"calibration solve failed: {exc}") from None
         spread = self._rotation_spread_deg()
+        loo_median = float(np.median(loo))
+        if rms > self.MAX_RMS_MM or loo_median > self.MAX_LOO_MEDIAN_MM:
+            active = "the previous calibration stays active" if self.scene.env_calibration is not None \
+                else "nothing is calibrated"
+            raise ValidationError(
+                f"calibration REJECTED (not saved, {active}): rms {rms:.1f} mm, leave-one-out median "
+                f"{loo_median:.1f} mm (limits {self.MAX_RMS_MM:.0f} / {self.MAX_LOO_MEDIAN_MM:.0f}) over {len(keep)} points. "
+                "Points from before a camera move are probably mixed in, or the poses are too similar: "
+                "reset_calibration, record 8–12 NEW points spread in XY, height (≥ 60 mm) and orientation, "
+                "solve again, then verify_calibration at a pose near the box.")
         calib = HandEye(T=T, eye_in_hand=False)
         calib.save(self.scene.cfg.calibration_path)
         self.scene.env_calibration = calib
+        self.solution = {"marker_offset_mm": [round(float(v), 2) for v in offset_mm], "rms_mm": round(float(rms), 2),
+                         "loo_median_mm": round(loo_median, 2), "points": len(keep), "t": time.time()}
+        self._save_session()
         worst = int(np.argmax(errors))
         return {"saved": str(self.scene.cfg.calibration_path), "points": len(keep),
                 "recorded": len(self.points), "dropped_outliers": dropped,
@@ -188,7 +228,43 @@ class SelfCalibration:
                 "marker_offset_in_flange_mm": [round(float(o), 1) for o in offset_mm],
                 "rotation_spread_deg": round(spread, 1),
                 "leave_one_out_mm": {"median": round(float(np.median(loo)), 1), "max": round(float(np.max(loo)), 1)},
+                "z_spread_mm": round(self._z_spread_mm(), 1),
                 "note": ("leave_one_out = error on a point when solved WITHOUT it: the honest accuracy. "
                          "find_objects / look now report base_xyz_mm. RMS on the points themselves is "
-                         "optimistic — verify by hovering over a block and checking with the wrist camera."
+                         "optimistic — check it with verify_calibration at a pose that was not recorded (near the box)."
                          + (" Rotation spread < 30°: the result may be unreliable." if spread < 30 else ""))}
+
+    def verify(self, samples: int = 5, max_error_mm: float | None = None) -> dict:
+        """Check the ACTIVE calibration at the current pose: where the env camera sees the
+        marker vs where the robot says it is. No motion. A large error means the camera
+        moved or the solve was bad -> the calibration is deactivated (look then says
+        calibrated=false) so no one targets with wrong coordinates."""
+        calib = self.scene.env_calibration
+        if calib is None:
+            return {"calibration_valid": False, "calibrated": False,
+                    "advice": "no active calibration: record 8–12 varied points, then solve_calibration"}
+        if not self.solution:
+            return {"calibration_valid": None, "calibrated": True,
+                    "advice": "calibration has no stored marker offset (solved before verify existed): "
+                              "reset_calibration and calibrate again to be able to verify it"}
+        state = self.p.get_state()
+        if state["moving"]:
+            raise ValidationError("robot is moving — verify only when it stands still")
+        cam, pixel, noise_mm = self._measure(samples)
+        P = pose_to_matrix(state["flange_pose"])
+        actual = P[:3, 3] + P[:3, :3] @ (np.array(self.solution["marker_offset_mm"]) / 1000.0)
+        T = calib.T
+        predicted = T[:3, :3] @ np.array(cam) + T[:3, 3]
+        err = (predicted - actual) * 1000.0
+        limit = float(max_error_mm or max(15.0, 3 * float(self.solution.get("loo_median_mm", 5.0))))
+        dist = float(np.linalg.norm(err))
+        out = {"error_mm": round(dist, 1), "error_xyz_mm": [round(float(e), 1) for e in err], "limit_mm": round(limit, 1),
+               "marker_pixel": pixel, "noise_mm": round(noise_mm, 1)}
+        if dist <= limit:
+            return {"calibration_valid": True, "calibrated": True, **out,
+                    "advice": "calibration agrees with the robot here: camera coordinates are usable (±a few cm)"}
+        self.deactivate(f"verify error {dist:.0f} mm > {limit:.0f} mm")
+        return {"calibration_valid": False, "calibrated": False, "deactivated": True, **out,
+                "advice": "the camera disagrees with the robot by more than the limit: the camera probably moved. "
+                          "The calibration was switched off. reset_calibration, record 8–12 new varied points, "
+                          "solve_calibration, then verify_calibration again before picking."}

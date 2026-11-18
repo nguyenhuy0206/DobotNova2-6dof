@@ -37,7 +37,9 @@ class SceneObject:
     depth_m: float | None = None         # distance from the camera
     camera_xyz_m: list[float] | None = None
     base_xyz_mm: list[float] | None = None   # robot base frame — what motion skills need
-    angle_deg: float | None = None       # edge angle of the blob in the image (0–90, minAreaRect)
+    angle_deg: float | None = None       # edge angle of the blob in the image (0–90, minAreaRect);
+                                         # absent when not measurable (small blob, or cut by the image edge)
+    cut_by_edge: bool = False            # only part of the object is in the image
 
     def summary(self) -> dict:
         d = asdict(self)
@@ -48,6 +50,8 @@ class SceneObject:
             d["depth_m"] = round(d["depth_m"], 4)
         if d["angle_deg"] is None:
             d.pop("angle_deg")
+        if not d["cut_by_edge"]:
+            d.pop("cut_by_edge")
         return d
 
 
@@ -135,7 +139,7 @@ class Scene:
             if base is not None and self.object_z_max is not None and base[2] > self.object_z_max:
                 continue                                     # on the robot, not on the table
             found.append(SceneObject(det.label, (u, v), det.bbox, det.area, depth, cam, base,
-                                     getattr(det, "angle_deg", None)))
+                                     getattr(det, "angle_deg", None), getattr(det, "cut_by_edge", False)))
         if found and found[0].base_xyz_mm is not None:
             self.last_seen[color] = {**found[0].summary(), "seen_at": time.time()}
         return found

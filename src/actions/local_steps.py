@@ -5,11 +5,11 @@ They return {"ok": bool, "ambiguous": bool, "detail": str, "camera": ...}:
 ambiguous = the evidence could not decide (object occluded …) -> Astra decides,
 with an image.
 
-Routines (skill step {"routine": name, "args": {...}}) are fixed, tested loops in
-code. Every motion they make goes through the ActionExecutor, so dry_run / confirm
+Routines (skill step {"routine": name, "args": {...}}) are tested loops in
+code. Astra can add its own and replace these (actions/astra_code.py, files in
+src/agent/astra_skills/); the primitives they call stay fixed. Every motion they make goes through the ActionExecutor, so dry_run / confirm
 / live, argument validation and all safety checks (table floor, approach zone,
 contact sensing, view guard, IK, speed cap) apply exactly as for Astra's own calls.
-Skills written by Astra can call these by name but cannot change them.
 
 The wrist-centring numbers come from the successful episode 20261112-181222:
 at z_top + 30 the green cube was grasped and lifted when the bottom-centre of its
@@ -26,9 +26,14 @@ from common.errors import RobotError
 
 class LocalSteps:
     def __init__(self, primitives, scene, executor=None, block_top_z: float | None = None,
-                 settle_s: float = 0.4, frame_retries: int = 3):
+                 settle_s: float = 0.4, frame_retries: int = 3, code=None):
         self.p, self.scene, self.executor = primitives, scene, executor
         self.block_top_z = block_top_z      # taught cube top (workcell.json), None = unknown
+        # Astra's own routines/checks (src/agent/astra_skills): replace core ones of the same name
+        from actions.astra_code import AstraCode
+        self.code = code if code is not None else AstraCode.default()
+        if self.code.core is None:
+            self.code.core = type(self)
         # The wrist frame comes from the UI stream and can lag a motion by a few hundred
         # ms: wait before reading it, and re-read a few frames before saying "not seen".
         self.settle_s, self.frame_retries = settle_s, frame_retries
@@ -64,12 +69,15 @@ class LocalSteps:
 
     # ------------------------------------------------------------------ checks
     def check(self, name: str, memo: dict, **args) -> dict:
+        own = self.code.get("check", name) if self.code is not None else None
         fn = getattr(self, f"check_{name}", None)
-        if fn is None:
-            raise ValueError(f"unknown check '{name}' (known: {sorted(CHECKS)})")
-        if self._dry():
+        if own is None and fn is None:
+            raise ValueError(f"unknown check '{name}' (known: {sorted(self.known('check'))})")
+        if self._dry() and not (own and own["dry_run"]):
             return {"ok": True, "detail": f"dry_run: {name} not evaluated"}
         try:
+            if own is not None:
+                return self.code.call(self, "check", name, memo, args)
             return fn(memo, **args)
         except (RobotError, OSError) as exc:
             return {"ok": False, "ambiguous": True, "detail": f"{name}: {exc}"}
@@ -79,8 +87,14 @@ class LocalSteps:
         ok = s.get("mode") == 5 and not s.get("error")
         return {"ok": ok, "detail": "" if ok else f"robot not ready (mode {s.get('mode')}, alarm={s.get('error')})"}
 
-    def check_z_top_plausible(self, memo, z_top: float, tol_mm: float = 8.0) -> dict:
-        """z_top given to a pick must agree with the taught cube top (if one is taught)."""
+    def check_z_top_plausible(self, memo, z_top: float, tol_mm: float = 8.0, min_above_table_mm: float = 15.0) -> dict:
+        """z_top given to a pick must be above the table (a cube on the box is) and agree
+        with the taught cube top (if one is taught)."""
+        table = getattr(self.p, "table_z_mm", None) if self.p is not None else None
+        if table is not None and float(z_top) < table + min_above_table_mm:
+            return {"ok": False, "detail": f"z_top={float(z_top):.1f} is not above the table ({table:.1f} + "
+                    f"{min_above_table_mm:.0f} mm): the env-camera heights are wrong — verify_calibration (and "
+                    "recalibrate if it fails) or use a measured contact height"}
         if self.block_top_z is None:
             return {"ok": True, "detail": "no taught cube top to compare with"}
         diff = float(z_top) - self.block_top_z
@@ -129,8 +143,14 @@ class LocalSteps:
             return {"ok": False, "ambiguous": True, "camera": "env", "detail": "no env reference of the block"}
         if any(math.dist(o["pixel"], ref) < min_shift_px for o in objs):
             return {"ok": False, "camera": "env", "detail": f"{color} is still where it was on the box: not lifted"}
+        # gone from its place is not enough: a dropped cube also left it (16 Nov 16:11)
+        g = (self.p.get_state().get("gripper") or {}) if self.p is not None else {}
+        status = str(g.get("grip_status", "")).lower()
+        if g.get("holding") is False or "drop" in status or "no object" in status:
+            return {"ok": False, "camera": "env", "detail": f"{color} left its place but the gripper is not holding it "
+                    f"({g.get('grip_status')}, position {g.get('position')}): dropped or knocked off, not lifted"}
         if objs:
-            return {"ok": True, "detail": f"{color} moved away from its place (env)"}
+            return {"ok": True, "detail": f"{color} moved away from its place (env) and the gripper holds it"}
         return {"ok": False, "ambiguous": True, "camera": "env",
                 "detail": f"env camera does not see {color} (occluded?): cannot tell if it was lifted"}
 
@@ -146,23 +166,46 @@ class LocalSteps:
 
     # ------------------------------------------------------------------ routines
     def routine(self, name: str, memo: dict, **args) -> dict:
+        if self.code is not None and self.code.get("routine", name) is not None:
+            return self.code.call(self, "routine", name, memo, args)      # Astra's version wins
         fn = getattr(self, f"routine_{name}", None)
         if fn is None:
-            raise ValueError(f"unknown routine '{name}' (known: {sorted(ROUTINES)})")
+            raise ValueError(f"unknown routine '{name}' (known: {sorted(self.known('routine'))})")
         return fn(memo, **args)
+
+    def known(self, kind: str) -> set[str]:
+        """Core + Astra's own routines / checks."""
+        core = CHECKS if kind == "check" else ROUTINES
+        return core | (self.code.names(kind) if self.code is not None else set())
+
+    # lifting straight up can leave the arm's reach at the far edge of the box: then step
+    # sideways TOWARDS the robot base (short, slow, contact-sensed) and keep lifting
+    DETOUR_MM, MAX_DETOURS = 15.0, 3
 
     def _vertical(self, z: float, step_mm: float, speed: int | None, sign: int) -> dict:
         start = self._tip()[2]
-        cur, moves = start, 0
+        cur, moves, detours = start, 0, 0
         while (cur - z) * sign < -0.5 and moves < 40:
             dz = sign * min(step_mm, abs(z - cur))
             r = self._move(dz=round(dz, 2), **({"speed": speed} if speed else {}))
             moves += 1
+            if not r["ok"] and sign > 0 and "not reachable" in str(r.get("error", "")) and detours < self.MAX_DETOURS:
+                x, y = self._tip()[:2]
+                d = math.hypot(x, y)
+                if d > 1:
+                    hop = self._move(dx=round(-self.DETOUR_MM * x / d, 2), dy=round(-self.DETOUR_MM * y / d, 2),
+                                     speed=1)
+                    detours += 1
+                    if hop["ok"]:
+                        continue                              # retry the lift from the detour
             if not r["ok"]:
-                return {"ok": False, "detail": r.get("error", ""), "z": cur, "moves": moves, "error_result": r}
+                return {"ok": False, "detail": r.get("error", ""), "z": cur, "moves": moves, "error_result": r,
+                        **({"detours": detours} if detours else {})}
             pose = (r.get("result") or {}).get("pose") if isinstance(r.get("result"), dict) else None
             cur = pose[2] if pose else cur + dz                # dry_run: planned z
-        return {"ok": True, "z": round(cur, 1), "moves": moves}
+        return {"ok": True, "z": round(cur, 1), "moves": moves,
+                **({"detours": detours, "detail": f"moved {detours * self.DETOUR_MM:.0f} mm towards the base "
+                    "to stay in reach while lifting"} if detours else {})}
 
     def routine_descend_to(self, memo, z: float, step_mm: float = 19, speed: int | None = None) -> dict:
         """Straight down to fingertip z in steps (contact sensing stops it on a surface)."""
@@ -209,7 +252,9 @@ class LocalSteps:
         if self._dry():
             memo.setdefault("vars", {})["measured_top"] = float(z_est)
             return {"ok": True, "measured_top": float(z_est), "detail": "dry_run: not probed"}
-        r = self.executor.execute("set_gripper", {"position": int(grip)})
+        specs = getattr(self.executor, "specs", None)
+        r = (self.executor.execute("set_gripper", {"position": int(grip)}) if specs is None or "set_gripper" in specs
+             else self.executor.execute("close_gripper", {}))     # explore: close_gripper stops at 50 %
         if not r["ok"]:
             return {"ok": False, "detail": r.get("error", ""), "error_result": r}
         z_min = float(z_est) - float(below_mm)
@@ -243,9 +288,13 @@ class LocalSteps:
     def routine_wrist_center(self, memo, color: str, target_u: float = 355, target_v: float = 140,
                              u_per_dy: float = 5.6, v_per_dx: float = -2.6, tol_px: float = 12,
                              max_iter: int = 6, max_step_mm: float = 15, gain: float = 0.8,
-                             speed: int | None = 1) -> dict:
-        """Centre the block between the fingers with tool-frame dx/dy from the wrist image."""
+                             speed: int | None = 1, max_travel_mm: float = 35) -> dict:
+        """Centre the block between the fingers with tool-frame dx/dy from the wrist image.
+        Never wanders more than max_travel_mm (≤ 50) from where it started: further away it is
+        chasing another object or the px/mm mapping is wrong for this height."""
         errs = []
+        travel_limit = min(float(max_travel_mm), 50.0)
+        tx = ty = 0.0
         for i in range(int(max_iter)):
             objs = sorted(self._wrist(color, 500), key=lambda o: -o["area_px"])
             if not objs:
@@ -261,6 +310,13 @@ class LocalSteps:
                         "detail": "centring does not converge (mapping wrong for this block/height?)"}
             dy = max(-max_step_mm, min(max_step_mm, -gain * eu / u_per_dy))
             dx = max(-max_step_mm, min(max_step_mm, -gain * ev / v_per_dx))
+            if math.hypot(tx + dx, ty + dy) > travel_limit:
+                return {"ok": False, "camera": "wrist", "iterations": i, "errors_px": errs,
+                        "travel_mm": [round(tx, 1), round(ty, 1)],
+                        "detail": f"centring would move {math.hypot(tx + dx, ty + dy):.0f} mm from its start "
+                                  f"(limit {travel_limit:.0f}): it is chasing another object or the px/mm mapping "
+                                  "is wrong at this height — look wrist and check which blob is the cube"}
+            tx, ty = tx + dx, ty + dy
             r = self.executor.execute("move_relative", {"dx": round(dx, 1), "dy": round(dy, 1), "frame": "tool",
                                                         **({"speed": speed} if speed else {})})
             if not r["ok"]:

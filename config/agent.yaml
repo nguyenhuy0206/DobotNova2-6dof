@@ -1,9 +1,12 @@
 # Astra agent harness.
-# Env overrides: ASTRA_MODEL, ASTRA_EXECUTION_MODE.
+# Env overrides: ASTRA_MODEL, ASTRA_EXECUTION_MODE, ASTRA_BASE_URL.
 # API key: `gpt6-key=...` in .env (git-ignored); falls back to OPENAI_API_KEY exported in your shell.
 
 model: gpt-6-astra
 api_key_env: gpt6-key     # name of the key variable in .env
+# Where requests go. The key in .env is a modelapi.vn key (OpenAI-compatible Responses API),
+# so it only works with this base_url. Empty = api.openai.com (for a key from OpenAI itself).
+base_url: https://modelapi.vn/v1
 max_output_tokens: 1000
 max_steps: 20            # model ⇄ tool round-trips per task
 max_speed: 10            # % cap on robot speed for everything Astra does (higher requests are clamped)

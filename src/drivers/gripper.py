@@ -32,6 +32,12 @@ INIT_HOME = 0x01             # normal initialize
 VALID_BAUDS = {4800, 9600, 19200, 38400, 57600, 115200}
 
 INIT_STATUS = {0: "not initialized", 1: "initialized", 2: "initializing"}
+
+
+def motion_timeout(speed: int) -> float:
+    """Seconds to wait for the fingers to stop. Travel time grows as speed drops: a fixed 5 s
+    made every speed-10 open/close time out (17 Nov: 0 of 3 at speed 10, 73 of 73 at >= 20)."""
+    return 3.0 + 100.0 / max(1, int(speed))
 GRIP_STATE = {0: "moving", 1: "arrived (no object)", 2: "object caught", 3: "object dropped"}
 
 
@@ -249,14 +255,33 @@ class PGCGripperDirect:
         self.write_register(REG_POSITION, position)
         return {"position": position, "force": force, "speed": speed}
 
-    def wait_motion(self, timeout: float = 5.0) -> dict:
-        """Poll until the fingers stop; grip_state tells whether an object was caught."""
+    def wait_motion(self, timeout: float = 5.0, target: int | None = None) -> dict:
+        """Poll until the fingers stop; grip_state tells whether an object was caught.
+        go_to passes motion_timeout(speed) and the target position.
+
+        grip_state 3 ("object dropped") is NOT the end of a motion by itself: opening while
+        holding reports 3 at once, while the fingers are still at the cube (17 Nov: open_gripper
+        returned position 521, a moment later 1000). With 3 the motion is done only when the
+        fingers reached the target (±20) or stopped moving."""
         deadline = time.monotonic() + timeout
         time.sleep(0.15)   # state reads 'arrived' briefly before motion starts
+        last_pos, still_since = None, None
         while time.monotonic() < deadline:
             status = self.status()
-            if status["grip_state"] in (1, 2, 3):
+            state, pos = status["grip_state"], status["position"]
+            if state in (1, 2):
                 return status
+            if state == 3:
+                if target is None or abs(pos - target) <= 20:
+                    return status
+                now = time.monotonic()
+                if last_pos is not None and abs(pos - last_pos) <= 2:
+                    still_since = still_since or now
+                    if now - still_since >= 0.4:
+                        return status              # stopped short of the target
+                else:
+                    still_since = None
+                last_pos = pos
             time.sleep(0.05)
         raise RobotError("PGC motion timed out.")
 
@@ -271,7 +296,7 @@ class PGCGripperDirect:
     def go_to(self, position: int, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
         """Move fingers to 0 (closed) … 1000 (open) and, by default, wait until they stop."""
         self.move(position, force, speed)
-        return self.wait_motion() if wait else self.status()
+        return self.wait_motion(motion_timeout(speed), target=position) if wait else self.status()
 
     def open(self, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
         return self.go_to(1000, force, speed, wait)
@@ -303,3 +328,80 @@ class PGCGripperDirect:
 
     def __exit__(self, *exc) -> None:
         self.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Through the UI app (ui/app.py owns the bus; every other process asks it)
+# ---------------------------------------------------------------------------
+
+class PGCGripperRemote:
+    """The gripper driven by ANOTHER process — ui/app.py — over its local HTTP API.
+
+    Modbus RTU allows one master on the bus. The UI app already holds the serial port (its
+    Debug tab polls the gripper state), so a second process opening the port too makes the
+    two talk over each other: replies get read by the wrong process ("expected 11 bytes,
+    got 0: NO RESPONSE", 17 Nov). With gripper.via_ui every other process (episodes,
+    scripts) sends its gripper calls to the app, whose single driver serialises them with
+    the UI's own. Same API as PGCGripperDirect.
+    """
+
+    def __init__(self, base_url: str, timeout: float = 20.0):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.transport = f"via ui/app.py at {self.base_url}"
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def _call(self, op: str, timeout: float | None = None, **kw) -> dict:
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        body = _json.dumps({"op": op, **kw, "confirm": True}).encode()
+        req = urllib.request.Request(f"{self.base_url}/api/gripper/driver", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as r:
+                return _json.loads(r.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            try:
+                why = _json.loads(exc.read().decode()).get("error")
+            except ValueError:
+                why = None
+            raise RobotError(f"gripper (via ui/app.py): {why or exc}") from None
+        except (urllib.error.URLError, OSError) as exc:
+            raise RobotError(f"gripper: cannot reach ui/app.py at {self.base_url} ({exc}). It owns the gripper's "
+                             "serial port — start it (scripts/run_ui.sh).") from None
+
+    def connect(self, slave_id: int = 1, baud: int = 115200, parity: str = "N") -> dict:
+        status = self._call("status")              # the app opens + initializes its driver on first use
+        self._connected = True
+        return {"transport": self.transport, **status}
+
+    def init(self, force_reinit: bool = False, full: bool = False) -> dict:
+        return self._call("init", force_reinit=force_reinit, full=full)
+
+    def status(self) -> dict:
+        return self._call("status")
+
+    def go_to(self, position: int, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        return self._call("go_to", timeout=max(self.timeout, motion_timeout(speed) + 10), position=int(position),
+                          force=int(force), speed=int(speed), wait=bool(wait))
+
+    def open(self, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        return self.go_to(1000, force, speed, wait)
+
+    def close(self, force: int = 30, speed: int = 50, wait: bool = True) -> dict:
+        return self.go_to(0, force, speed, wait)
+
+    grip = close
+
+    def is_holding(self) -> bool:
+        return self.status().get("grip_state") == 2
+
+    def disconnect(self) -> str:
+        self._connected = False
+        return "remote: nothing to close (ui/app.py keeps the port)"

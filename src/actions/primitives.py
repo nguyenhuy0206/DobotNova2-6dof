@@ -43,6 +43,7 @@ import numpy as np
 from actions import validation as v
 from actions.robot_actions import RobotActions
 from common.config import WorkspaceLimits
+from actions import self_collision
 from common.errors import ContactError, RobotError, SafetyError, ValidationError
 from common.log import get_logger
 from common.types import Feedback
@@ -71,6 +72,7 @@ class PrimitiveSkills:
         self.view_guard: Callable[[], dict] | None = None # explore mode
         self.grip_close_position: int | None = None       # None = close fully
         self.grip_open_position: int | None = None        # None = open fully (1000)
+        self.grip_speed: int | None = None                # fixed finger speed % for open/close (None = per call)
         # controller active tool, translation in the flange frame (mm); measured per motion
         self.active_tool_offset = np.zeros(3)
         self.tool_offset_source = "not measured yet"
@@ -210,6 +212,26 @@ class PrimitiveSkills:
                 raise SafetyError(f"Cannot check the joint path against the table (no FK: {exc}).") from None
             self._check_points(tip, flange, "target" if k == n else f"joint path {k * 100 // n}%")
 
+    # -- self-collision: gripper vs the robot's own elbow / arm (actions/self_collision.py) -----
+    def _self_check_on(self, fb: Feedback) -> bool:
+        """On when enabled AND the kinematic model reproduces the flange the controller reports
+        now (within 5 mm): another robot, or a simulator, is never judged by the wrong model."""
+        if (self.m.self_clearance_mm <= 0 and self.m.wrist_clearance_mm <= 0) \
+                or self.tool_offset_source != "controller FK":
+            return False
+        model = self_collision.flange_pose(fb["joints_deg"])[:3]
+        return float(np.linalg.norm(np.subtract(model, self.flange_from_controller(fb["pose"])[:3]))) <= 5.0
+
+    def _self_check_joints(self, fb: Feedback, end: list[float]) -> None:
+        if self._self_check_on(fb):
+            self_collision.check_joint_path(fb["joints_deg"], end, self.tool_length_mm, self.m.self_clearance_mm,
+                                            wrist_min_mm=self.m.wrist_clearance_mm)
+
+    def _self_check_linear(self, fb: Feedback, start: list[float], target: list[float]) -> None:
+        if self._self_check_on(fb):
+            self_collision.check_linear_path(fb["joints_deg"], start, target, self.tool_length_mm,
+                                             self.m.self_clearance_mm, wrist_min_mm=self.m.wrist_clearance_mm)
+
     def _ik(self, flange_pose: list[float]) -> list[float] | None:
         """Joints for a flange pose from the controller's IK. Raises ValidationError
         when unreachable (instead of letting the move alarm); None when the
@@ -244,6 +266,27 @@ class PrimitiveSkills:
                 f"move there, this one is {inside:.0f} mm. Stop at Z≈{top:.0f}, then go down/sideways in "
                 "small steps and look with the wrist camera in between.")
         return min(speed, self.m.approach_speed), True
+
+    def _recover_from_alarm(self) -> bool:
+        """ClearError, re-enable if the controller dropped to disabled, and wait until it is
+        ready (mode 5, no alarm, enabled). False = it did not come back: stay stopped."""
+        deadline = time.monotonic() + self.m.recovery_timeout_s
+        enabled_once = False
+        try:
+            self.robot.clear_error()
+            while time.monotonic() < deadline:
+                time.sleep(max(self.m.poll_s, 0.2))
+                fb = self.robot.feedback()
+                if not fb["error"] and fb.get("mode") == 5 and fb.get("enabled", 1):
+                    return True
+                if not fb["error"] and not enabled_once and (fb.get("mode") == 4 or not fb.get("enabled", 1)):
+                    self.robot.enable()
+                    enabled_once = True
+                elif fb["error"]:
+                    self.robot.clear_error()
+        except (RobotError, OSError):
+            return False
+        return False
 
     def _back_off(self) -> list[float]:
         """After a contact: straight up by contact_backoff_mm (pure lift, always allowed)."""
@@ -302,6 +345,15 @@ class PrimitiveSkills:
             fb = self.robot.feedback()
             if fb["error"]:
                 self.robot.stop()
+                if contact and self.m.collision_recovery:
+                    tip = self._summary(fb)["pose"]
+                    if self._recover_from_alarm():
+                        self._back_off()
+                        raise ContactError(
+                            f"{label}: CONTACT at fingertip Z={tip[2]:.1f} (X={tip[0]:.1f}, Y={tip[1]:.1f}) — the "
+                            "controller's collision detection stopped the arm (alarm cleared, robot enabled again) "
+                            f"and it moved up {self.m.contact_backoff_mm:g} mm. That Z is where something blocked "
+                            "the gripper.")
                 raise SafetyError(f"{label}: robot alarm during motion — stopped.")
             idle = fb["running"] == 0
             if idle and (reached(fb) if reached else elapsed >= self.m.start_grace_s):
@@ -392,12 +444,14 @@ class PrimitiveSkills:
                     linear, note = True, f"used a straight line (MovL): {why}"
             if linear:
                 self._check_linear_path(start, target)
+                self._self_check_linear(fb, start, target)
                 self.robot.movl(target, speed)
                 result = self._wait(self._pose_reached(target), "move_to_pose", contact=contact)
                 undo = self._undo_linear(start, speed)
             else:
                 self._check_points(tip, target[:3])
                 if joints is not None:
+                    self._self_check_joints(fb, joints)
                     self.robot.joint_movj(joints, speed)
                     result = self._wait(self._joints_reached(joints), "move_to_pose")
                 else:
@@ -416,6 +470,7 @@ class PrimitiveSkills:
         with self.a.lock:
             fb = self._ready()
             self._check_joint_path(fb["joints_deg"], joints)
+            self._self_check_joints(fb, joints)
             self.robot.joint_movj(joints, speed)
             result = self._wait(self._joints_reached(joints), "move_to_joints")
             return self._after_motion(result, self._undo_joints(fb["joints_deg"], speed))
@@ -449,6 +504,7 @@ class PrimitiveSkills:
                 self._check_points(list(tip1), list(flange1), use_floor=False)
             else:
                 self._check_linear_path(start, target)
+                self._self_check_linear(fb, start, target)
             speed, contact = self._approach(list(tip0), list(tip1), speed)
             self._ik(target)
             self.robot.movl(target, speed)
@@ -466,6 +522,7 @@ class PrimitiveSkills:
             target[joint - 1] += degrees
             v.check_joint_limits(target, self.m.joint_limits_deg)
             self._check_joint_path(fb["joints_deg"], target)
+            self._self_check_joints(fb, target)
             deltas = [0.0] * 6
             deltas[joint - 1] = degrees
             self.robot.rel_joint_movj(deltas, speed)
@@ -500,6 +557,8 @@ class PrimitiveSkills:
     # ------------------------------------------------------------------
     def _g(self, force, speed):
         gc = self.cfg.gripper
+        if self.grip_speed is not None:
+            speed = self.grip_speed                          # fixed: whatever the caller asked
         return (gc.force if force is None else int(force)), (gc.speed if speed is None else int(speed))
 
     def open_gripper(self, force: int | None = None, speed: int | None = None) -> dict:
@@ -534,17 +593,20 @@ class PrimitiveSkills:
         return {"result": self.robot.stop()}
 
 
-def gripper_factory(actions: RobotActions) -> Callable[[], object]:
-    """Pick the gripper transport from config (gripper.transport: direct | controller)."""
-    from drivers.gripper import PGCGripper, PGCGripperDirect
+def gripper_factory(actions: RobotActions, owner: bool = False) -> Callable[[], object]:
+    """Pick the gripper transport from config (gripper.transport: direct | controller).
+    gripper.via_ui: every process except the bus owner (ui/app.py, owner=True) goes through it."""
+    from drivers.gripper import PGCGripper, PGCGripperDirect, PGCGripperRemote
 
-    gc = actions.config.gripper
+    gc, cfg = actions.config.gripper, actions.config
+    if gc.via_ui and not owner:
+        return lambda: PGCGripperRemote(f"http://{cfg.ui_host}:{cfg.ui_port}")
     if gc.transport == "direct":
         return lambda: PGCGripperDirect(gc.port)
     return lambda: PGCGripper(actions.robot)
 
 
-def create_primitives(robot_cfg=None, actions: RobotActions | None = None) -> PrimitiveSkills:
+def create_primitives(robot_cfg=None, actions: RobotActions | None = None, owner: bool = False) -> PrimitiveSkills:
     """Wire up robot + gripper from config/robot.yaml. Gripper connects lazily.
 
     Pass an existing ``actions`` to share its lock, motion lock and position store
@@ -558,6 +620,6 @@ def create_primitives(robot_cfg=None, actions: RobotActions | None = None) -> Pr
         actions = RobotActions(Nova2(cfg.ip, cfg.timeout_s), cfg)
     from memory.workcell import load_workcell
 
-    prims = PrimitiveSkills(actions, gripper_factory(actions))
+    prims = PrimitiveSkills(actions, gripper_factory(actions, owner=owner))
     prims.table_z_mm = load_workcell().get("table_z_mm")
     return prims

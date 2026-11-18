@@ -147,6 +147,23 @@ def aborts_chunk(events: list[Event]) -> bool:
     return any(e.type in ABORTS_CHUNK for e in events)
 
 
+def objects_digest(objects: list, per_color: int = 3) -> str:
+    """Every colour appears: up to per_color blobs with base coordinates each (pixel when
+    there are none), and how many more there were."""
+    groups: dict = {}
+    for o in objects:
+        groups.setdefault(o.get("label"), []).append(o)
+    parts = []
+    for label, blobs in groups.items():
+        placed = [o for o in blobs if o.get("base_xyz_mm")]
+        shown = [",".join(f"{v:.0f}" for v in o["base_xyz_mm"]) for o in placed[:per_color]]
+        if not shown:
+            shown = [f"px{list(blobs[0].get('pixel') or [])}"]
+        rest = len(blobs) - len(shown)
+        parts.append(f"{label}@" + "|".join(shown) + (f"(+{rest})" if rest else ""))
+    return ";".join(parts)
+
+
 def digest_line(step: int, name: str, args: dict, result: dict, events: list[Event]) -> str:
     """Deterministic one-line summary of an action (no LLM)."""
     res = result.get("result")
@@ -162,9 +179,7 @@ def digest_line(step: int, name: str, args: dict, result: dict, events: list[Eve
             if k in res:
                 bits.append(f"{k}={str(res[k])[:60]}")
         if "objects" in res:
-            bits.append("objs=" + ";".join(
-                f"{o.get('label')}@{','.join(f'{v:.0f}' for v in o['base_xyz_mm'])}" if o.get("base_xyz_mm")
-                else f"{o.get('label')}px{o.get('pixel')}" for o in res["objects"][:6]))
+            bits.append("objs=" + objects_digest(res["objects"]))
         out = " ".join(bits) or "ok"
     else:
         out = str(res)[:80]

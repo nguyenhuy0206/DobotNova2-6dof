@@ -45,18 +45,23 @@ def test_episode_review_records_outcome_and_updates_skill(prims, sim, tmp_path):
     episodes = EpisodeStore(tmp_path / "ep")
     lib = SkillLibrary(tmp_path / "skills.json")
     notes = NotesStore(tmp_path / "notes.jsonl")
+    from memory.knowledge import KnowledgeStore
+    know = KnowledgeStore(tmp_path / "concepts.json")
+    know.records = lambda name: name in ("move_relative", "run_skill")     # what the harness records
     runner = SkillRunner(lib)
-    cal = NS(record=lambda: {}, solve=lambda: {}, reset=lambda: {})
-    main = ActionExecutor(build_registry(prims, runner=runner) + _explore_specs(cal, None, notes), mode="live")
+    cal = NS(record=lambda: {}, solve=lambda: {}, reset=lambda: {}, verify=lambda: {})
+    main = ActionExecutor(build_registry(prims, runner=runner) + _explore_specs(cal, None, notes, knowledge=know), mode="live")
     runner.executor = main
 
     # 1) an episode with the robot
     robot = FakeClient([NS(id="a", output=[call("get_state", {}, "1")], output_text=""),
                         NS(id="b", output=[call("move_relative", {"dz": -20}, "2")], output_text=""),
                         NS(id="c", output=[], output_text="moved down")])
-    h = AgentHarness(robot, main, AgentConfig(), episodes, lib, notes=notes)
+    h = AgentHarness(robot, main, AgentConfig(), episodes, lib, notes=know, observer=know.observe)
     h.run("pick a block")
     ep = h.last_episode
+    assert [o["vars"]["action"] for o in know.obs.items] == ["move_relative"]       # recorded by the harness
+    assert know.obs.items[0]["episode"] == ep and know.obs.items[0]["vars"]["ok"] is True
     log = summarize_episode(episodes, ep)
     assert "TASK: pick a block" in log and "move_relative" in log and "END: done" in log
 
@@ -64,7 +69,9 @@ def test_episode_review_records_outcome_and_updates_skill(prims, sim, tmp_path):
     recorder = OutcomeRecorder(episodes, tmp_path / "ep" / "index.jsonl")
     recorder.episode_id = ep
     review_ex = reflect_executor(main, recorder)
-    assert set(review_ex.specs) == {"record_episode_outcome", "list_skills", "save_skill", "write_note", "read_notes"}
+    assert set(review_ex.specs) == {"record_episode_outcome", "list_skills", "save_skill", "list_concepts",
+                                    "define_concept", "update_model", "propose_hypothesis", "archive_knowledge",
+                                    "query_observations", "read_history"}
     assert "move_relative" not in review_ex.specs and "get_state" not in review_ex.specs
     steps = [{"tool": "move_relative", "args": {"dz": "=-{step}"}}]
     reviewer = FakeClient([
@@ -72,13 +79,20 @@ def test_episode_review_records_outcome_and_updates_skill(prims, sim, tmp_path):
                                                             "summary": "only descended"}, "o"),
                             call("save_skill", {"name": "descend", "description": "step down",
                                                 "steps": steps, "params": {"step": 20}}, "s"),
-                            call("write_note", {"text": "descend works in 20 mm steps", "topic": "approach"}, "n")],
+                            call("define_concept", {"quantity": "free travel above the block",
+                                                    "depends_on": ["dz"]}, "c"),
+                            call("propose_hypothesis", {"concept_id": "C1", "mechanism": "nothing is in the way "
+                                                        "for the first 20 mm below the start pose",
+                                                        "when": {"action": "move_relative", "dz": [-20, 0]},
+                                                        "expect": {"ok": True}}, "n")],
            output_text=""),
         NS(id="r2", output=[], output_text="reviewed")])
-    AgentHarness(reviewer, review_ex, AgentConfig(), EpisodeStore(tmp_path / "rev"), lib, notes=notes).run(log)
+    AgentHarness(reviewer, review_ex, AgentConfig(), EpisodeStore(tmp_path / "rev"), lib, notes=know).run(log)
     assert recorder.last["success"] is False and history(tmp_path / "ep" / "index.jsonl")[0]["episode"] == ep
     assert episodes.load(ep)[-1]["event"] == "outcome"
-    assert lib.get("descend").version == 1 and notes.read("approach")["total"] == 1
+    hyp = know.list("C1")["hypotheses"][0]
+    assert lib.get("descend").version == 1
+    assert (hyp["supports"], hyp["predicted"], hyp["status"]) == (1, 0, "open")    # fits the past, predicts nothing yet
     # the next review improves the same skill -> version 2
     runner.save("descend", "smaller steps", [{"tool": "move_relative", "args": {"dz": -10}}])
     assert lib.get("descend").version == 2

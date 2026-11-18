@@ -170,13 +170,15 @@ def test_explore_tools_registered(p, tmp_path):
     from agent.explore import _explore_specs, load_explore_config
     from agent.toolkit import build_toolkit
     from common.config import AgentConfig, PerceptionConfig, RobotConfig
+    from memory.knowledge import KnowledgeStore
     from memory.notes import NotesStore
     from memory.skills import SkillLibrary
     from perception.robot_view import SelfCalibration
     from perception.scene import Scene
 
     cfg = load_explore_config()
-    assert cfg.gripper.close_position == 500 and "record_calibration_point" in cfg.allowed_tools
+    assert cfg.gripper.close_position == 500 and "auto_calibrate" in cfg.allowed_tools
+    assert "record_calibration_point" not in cfg.allowed_tools            # manual calibration is off
     scene = Scene(PerceptionConfig(colors={"red": [[[0, 120, 70], [10, 255, 255]]]}), {})
     cal = SelfCalibration(scene, p, session_file=tmp_path / "session.json")
     agent = AgentConfig(allowed_tools=cfg.allowed_tools)
@@ -184,9 +186,14 @@ def test_explore_tools_registered(p, tmp_path):
     p.grip_close_position = 500
     executor, _ = build_toolkit("dry_run", robot_cfg=RobotConfig(), agent_cfg=agent, perception_cfg=scene.cfg,
                                 primitives=p, scene=scene, library=lib, seed_skills=False,
-                                extra_specs=_explore_specs(cal, lambda: {"visible": True}, NotesStore(tmp_path / "n")))
+                                extra_specs=_explore_specs(cal, lambda: {"visible": True}, NotesStore(tmp_path / "n"),
+                                                           knowledge=KnowledgeStore(tmp_path / "c.json")))
     names = {s.name for s in executor.list()}
-    assert {"record_calibration_point", "solve_calibration", "write_note", "check_robot_in_view"} <= names
+    assert {"auto_calibrate", "verify_calibration", "propose_hypothesis", "check_robot_in_view",
+            "define_concept", "query_observations", "record_measurement", "read_history"} <= names
+    assert not {"record_evidence", "generalize_hypothesis", "read_notes"} & names      # evidence is computed
+    assert "write_note" not in names                                  # raw notes are not written any more
+    assert "stop" not in names and "set_gripper" not in names          # only a controller alarm stops
     assert "search_object" not in names and lib.all() == []          # no seeds in explore mode
     assert "500" in executor.specs["close_gripper"].description
     assert json.dumps(executor.specs["look"].parameters).count("zoom") == 1
@@ -363,6 +370,156 @@ def test_contact_stops_and_backs_off(table, sim):
     assert sim.state["pose"][2] == pytest.approx(110)            # backed off 15 mm
 
 
+def _collision_world(sim, clears: bool):
+    """First move: the controller raises a collision alarm at Z 95; ClearError works or not."""
+    sim.state["pose"] = [300.0, 0.0, 100.0, 180.0, 0.0, 0.0]
+    sim.fk = lambda j: list(sim.state["pose"])
+    real_motion, real_dash = sim.motion, sim.dashboard
+    hit = {"n": 0}
+
+    def motion(cmd):
+        if hit["n"] == 0:
+            hit["n"] = 1
+            sim.motion_log.append(cmd)
+            sim.state.update(pose=[300.0, 0.0, 95.0, 180.0, 0.0, 0.0], error=1, mode=9, running=0)
+            return "queued"
+        return real_motion(cmd)
+
+    def dashboard(cmd):
+        if cmd.startswith("ClearError") and clears:
+            sim.state.update(error=0, mode=5)
+        return real_dash(cmd)
+    sim.motion, sim.dashboard = motion, dashboard
+
+
+def test_collision_alarm_in_the_approach_zone_is_a_contact(table, sim):
+    from common.errors import ContactError
+
+    table.m.approach_height_mm, table.m.move_timeout_s, table.m.poll_s = 120, 5, 0.01
+    _collision_world(sim, clears=True)
+    with pytest.raises(ContactError, match=r"CONTACT at fingertip Z=95.*collision detection"):
+        table.move_relative(dz=-20)
+    assert "ClearError()" in sim.dashboard_log
+    assert sim.state["pose"][2] == pytest.approx(110) and sim.state["error"] == 0    # cleared, backed off
+
+
+def test_collision_alarm_that_does_not_clear_stops(table, sim):
+    from common.errors import SafetyError
+
+    table.m.approach_height_mm, table.m.move_timeout_s, table.m.poll_s = 120, 5, 0.01
+    table.m.recovery_timeout_s = 0.5
+    _collision_world(sim, clears=False)
+    with pytest.raises(SafetyError, match="robot alarm during motion"):
+        table.move_relative(dz=-20)
+    assert sim.state["pose"][2] == pytest.approx(95)                                  # did not move again
+
+
 def test_open_gripper_partial(p, gripper):
     p.grip_open_position = 750
     assert p.open_gripper()["position"] == 750
+
+
+def _calibration_world(tmp_path, monkeypatch, seed=5, n=10):
+    from perception import robot_view
+    from perception.robot_view import SelfCalibration
+
+    rng = np.random.default_rng(seed)
+    T = pose_to_matrix([400, -200, 600, -120, 5, 30])
+    o = np.array([0.03, -0.02, 0.09])
+    world = {"T": T, "pose": None}
+
+    def cam_point(pose):
+        P = pose_to_matrix(pose)
+        base = P[:3, 3] + P[:3, :3] @ o
+        return world["T"][:3, :3].T @ (base - world["T"][:3, 3])
+
+    scene = SimpleNamespace(cfg=SimpleNamespace(calibration_path=tmp_path / "hand_eye_env.json"),
+                            env_calibration=None, observe=lambda cam: "frame",
+                            locate=lambda f, u, v: (1.0, list(cam_point(world["pose"])), None))
+    prims = SimpleNamespace(get_state=lambda: {"flange_pose": world["pose"], "moving": False})
+    monkeypatch.setattr(robot_view, "find_marker", lambda *a: SimpleNamespace(center=(320, 240)))
+    cal = SelfCalibration(scene, prims, session_file=tmp_path / "session.json")
+    poses = [[250 + rng.uniform(-120, 120), rng.uniform(-150, 150), 220 + rng.uniform(0, 200),
+              180 + rng.uniform(-25, 25), rng.uniform(-25, 25), rng.uniform(-90, 90)] for _ in range(n)]
+    return cal, scene, world, poses
+
+
+def test_verify_calibration_catches_a_moved_camera(tmp_path, monkeypatch):
+    cal, scene, world, poses = _calibration_world(tmp_path, monkeypatch)
+    for pose in poses:
+        world["pose"] = pose
+        cal.record()
+    cal.solve()
+    world["pose"] = [300, 50, 260, 180, 10, -40]                      # a pose that was not recorded
+    ok = cal.verify()
+    assert ok["calibration_valid"] and ok["error_mm"] < 2
+    world["T"] = pose_to_matrix([430, -180, 600, -120, 5, 30])         # camera bumped by ~36 mm
+    bad = cal.verify()
+    assert bad["calibration_valid"] is False and bad["deactivated"] and scene.env_calibration is None
+    assert not (tmp_path / "hand_eye_env.json").exists()               # set aside as *.rejected-*.json
+    assert any(p.name.startswith("hand_eye_env.rejected-") for p in tmp_path.iterdir())
+
+
+def test_solve_rejects_points_mixed_from_two_camera_positions(tmp_path, monkeypatch):
+    cal, scene, world, poses = _calibration_world(tmp_path, monkeypatch, n=8)
+    for pose in poses[:5]:
+        world["pose"] = pose
+        cal.record()
+    world["T"] = pose_to_matrix([520, -60, 600, -110, 5, 45])          # camera moved between points
+    for pose in poses[5:]:
+        world["pose"] = pose
+        cal.record()
+    with pytest.raises(ValidationError, match="REJECTED"):
+        cal.solve()
+    assert scene.env_calibration is None and not (tmp_path / "hand_eye_env.json").exists()
+
+
+def test_calibration_advice_asks_for_height_spread(tmp_path, monkeypatch):
+    cal, scene, world, poses = _calibration_world(tmp_path, monkeypatch, n=3)
+    for i, pose in enumerate(poses):
+        world["pose"] = [pose[0], pose[1], 230 + 5 * i, *pose[3:]]
+        rec = cal.record()
+    assert "HEIGHT" in rec["advice"]
+
+
+def test_gripper_tools_are_fixed_open_full_close_half_speed_20(prims, gripper):
+    from actions.registry import build_registry
+
+    prims.grip_open_position, prims.grip_close_position, prims.grip_speed = 1000, 500, 20
+    specs = {s.name: s for s in build_registry(prims)}
+    assert "1000" in specs["open_gripper"].description and "speed 20 %" in specs["open_gripper"].description
+    assert "500" in specs["close_gripper"].description
+    assert specs["close_gripper"].parameters["properties"]["speed"]["enum"] == [20]
+    seen = []
+    gripper.go_to = lambda pos, force=30, speed=50, wait=True: seen.append((pos, speed)) or {"grip_state": 1,
+                                                                                            "position": pos}
+    prims.close_gripper(speed=10)                         # a direct call cannot pick another speed either
+    prims.open_gripper()
+    assert seen == [(500, 20), (1000, 20)]
+
+
+
+def test_auto_calibrate_tool_runs_the_scripted_calibration(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    from agent.explore import auto_calibrate_spec
+    from perception import auto_calibration
+
+    calls = {}
+    prims = NS(table_z_mm=41.96, speed_cap=10)
+    cal = NS(p=prims, reset=lambda: calls.setdefault("reset", True))
+
+    def fake_auto(p, calibration, center=None, span_mm=100, speed=10, target_points=12, log=print):
+        calls.update(center=center, span=span_mm, speed=speed, points=target_points)
+        return {"points": 12, "rms_mm": 4.4, "leave_one_out_mm": {"median": 5.5, "max": 9.0},
+                "marker_offset_in_flange_mm": [18.2, 1.0, 44.8], "skipped": [{"pose": "6", "why": "unreachable"},
+                                                                                {"pose": "9", "why": "unreachable"}]}
+    monkeypatch.setattr(auto_calibration, "auto_calibrate", fake_auto)
+    monkeypatch.setattr(auto_calibration, "suggest_center", lambda p: [-300.0, -350.0])     # near the edge
+    spec = auto_calibrate_spec(cal)
+    assert spec.moves_robot and "whenever the calibration is in doubt" in spec.description
+    out = spec.handler()
+    assert calls["reset"] and calls["center"] == [-300.0, -350.0, 41.96 + 150] and calls["speed"] == 10
+    assert out["calibrated"] and out["rms_mm"] == 4.4 and out["skipped_why"] == {"unreachable": 2}
+    spec.handler(center=[-320, -360, 200], span_mm=80)
+    assert calls["center"] == [-320.0, -360.0, 200.0] and calls["span"] == 80.0

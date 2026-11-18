@@ -2,13 +2,15 @@
 #   scripts/run_explore.sh            (needs scripts/run_vision.sh running in another terminal)
 # Model, API key, speed cap: config/agent.yaml. Robot limits: config/robot.yaml.
 
+# The task that succeeded 3/3 on 17 Nov (165638, 172537, 173052, 173616): keep it as the default.
 task: >
-  Move ALL THREE cubes (blue, green, yellow) from the top of the white box onto free spots of the
-  metal table, one at a time, each verified by the env camera. Use run_skill pick_block_wrist (one call
-  per grasp attempt) and run_skill place_block_on_table (spots ≥ 60 mm apart). A failed attempt is
-  data: change one thing (rz ±15–30 so the edges are square to the fingers, depth_mm, x/y) and retry,
-  at most 4 attempts per cube. Finish with one env look and a short report: which cubes are on the
-  table, attempts per cube and the settings that worked.
+  Move ALL THREE cubes (blue, green, yellow) from the top of the white box onto free spots of the metal
+  table, one at a time, each placement verified by the env camera. Finish with a short report.
+
+# Other tasks tried on 17 Nov (not solved yet; see REPORT 10.26):
+#   Stack all cubes on red cubes. Report after done.
+#   Pick the cube from the white box, then move it to the orange box. Report after done.
+#   Pick the cube from the white box, then move it to the red box. Report after done.
 
 execution_mode: live      # live | confirm (ask y/N on every motion) | dry_run
 max_steps: 60             # model calls per episode (a skill call runs many steps locally)
@@ -22,18 +24,27 @@ harness:                  # token-efficient harness (agent/harness.py) — same 
   env_image_detail: low   # env images are only for overview; detections come as data
   wrist_image_detail: high
   max_episode_tokens: 400000   # stop the episode (not the robot mid-move) when reached; 0 = off
+  max_repeats: 3          # same action (tool + args) or same hypothesis this many times in a row ends the episode; 0 = off
+  post_lift_image: true  # once per grasp, a wrist image after lifting while holding: log + review only, not shown live
 
 skills:
-  require_validation: true      # candidate skills run live only after the operator says y
-  min_supervised_successes: 2   # --promote NAME needs this many supervised successes
+  # Autonomous: Astra runs, revises, rolls back and retires its own skills without asking (no y/N).
+  # The hard limits (speed, table floor, approach zone, contact stop, view guard) still apply to every move.
+  # true = the old supervised mode: every candidate run needs the operator's y.
+  require_validation: false
+  auto_promote_after: 2         # candidate -> validated after 2 camera-verified successes in a row (0 = never)
+  min_supervised_successes: 2   # --promote NAME (operator) needs this many supervised successes
   builtin_pick_place: true      # pick_block_wrist / place_block_on_table (from episode 181222)
+diagnosis:
+  gate_after_repeats: 2         # refuse run_skill/save_skill only when the SAME failure repeats 2× undiagnosed (0 = never)
 reflect_max_steps: 6            # one reflection pass after each episode, ≤ 6 model calls
 
 episodes: 1               # attempts per run_explore.sh call (each followed by a self-review)
 
 gripper:
   close_position: 500     # close_gripper stops at 50 % (0 = closed … 1000 = open); never closes further
-  open_position: 800      # open_gripper opens to 80 %: fully open fingers knocked neighbouring blocks
+  open_position: 1000     # fully open: at 80 % the fingertips pressed on the cube (16 Nov)
+  speed: 20               # fixed finger speed % for open/close (speed 10 timed out 3 of 3, 17 Nov)
 
 view_guard:               # env camera (D455 colour) must always see the robot
   enabled: true
@@ -55,19 +66,35 @@ allowed_tools:
   - save_position
   - open_gripper
   - close_gripper
-  - set_gripper
-  - stop
   # seeing
   - look
   - find_objects
   - check_robot_in_view
   # self-calibration of the env camera
-  - record_calibration_point
-  - solve_calibration
-  - reset_calibration
+  - auto_calibrate          # scripts/run_calibration.sh as a tool (tilted poses; the manual record/solve
+  - verify_calibration      # tools are off: on 17 Nov they gave a calibration with no tilt, cubes 45 mm low)
   # learning
   - list_skills
   - run_skill
   - save_skill
-  - write_note
-  - read_notes
+  - rollback_skill
+  - retire_skill
+  # failure investigation (agent/diagnosis.py): hypotheses -> tests -> verdicts
+  - diagnose
+  - conclude
+  # Astra's own code (src/agent/astra_skills): write / test / roll back routines and checks
+  - list_routines
+  - read_routine
+  - write_routine
+  - rollback_routine
+  - run_routine
+  # knowledge (memory/knowledge.py): observations recorded by the harness -> concepts -> hypotheses
+  # with predictions checked by code; read_history = brief of past episodes / old hypotheses / notes
+  - list_concepts
+  - define_concept
+  - update_model
+  - propose_hypothesis
+  - archive_knowledge
+  - query_observations
+  - record_measurement
+  - read_history

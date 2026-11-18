@@ -14,7 +14,7 @@ if __name__ == "__main__":
     cfg = load_agent_config()
     try:
         client = AstraClient(cfg)
-        print("Key from:", client.key_source)
+        print("Key from:", client.key_source, "| endpoint:", client.endpoint)
         response = client.create(PROMPT)
         print("Model:", response.model)
         print("Response:", response.output_text)

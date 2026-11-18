@@ -13,6 +13,7 @@ previous_response_id) whose size has a fixed upper bound:
           (milestones — grasps, placements, errors — are kept longest)
     LAST TURNS: the last ``recent_turns`` model turns with compact results
     LATEST RESULTS: the results of the previous turn in full (images removed)
+    LOOKUPS: the latest result of each lookup (list_skills NAME, list_concepts …), kept until repeated
     image(s): only those the image policy lets through, this turn only
 
 The full history stays in data/episodes/<id>.jsonl for audit and learning.
@@ -35,6 +36,14 @@ class ContextPolicy:
     summary_max_chars: int = 4000    # ≈ 1000 tokens
     latest_result_chars: int = 6000
     turn_result_chars: int = 300
+    reference_items: int = 4         # latest results of lookups (list_skills NAME, …) kept in full
+    reference_chars: int = 1500
+
+
+# lookups whose answer stays true until something is changed: kept until repeated, so a long
+# episode does not forget a skill's params after one turn and look them up again
+REFERENCE_TOOLS = ("list_skills", "list_routines", "read_routine", "list_concepts", "query_observations",
+                   "read_history")
 
 
 def compact_result(result: dict, limit: int) -> str:
@@ -43,7 +52,7 @@ def compact_result(result: dict, limit: int) -> str:
     if isinstance(res, dict):
         res = {k: v for k, v in res.items() if k not in ("image_jpeg_b64", "image_file")}
         if "objects" in res:
-            res["objects"] = [{k: o.get(k) for k in ("label", "pixel", "bbox", "area_px", "base_xyz_mm", "angle_deg")
+            res["objects"] = [{k: o.get(k) for k in ("label", "pixel", "bbox", "area_px", "base_xyz_mm", "angle_deg", "cut_by_edge")
                                if o.get(k) is not None} for o in res["objects"]]
     out = {"ok": result.get("ok"), **({"error": result["error"]} if "error" in result else {}),
            **({"result": res} if res is not None else {})}
@@ -62,6 +71,7 @@ class WorkingMemory:
     progress: list = field(default_factory=list)               # verified facts ("green placed at …")
     unresolved_error: str | None = None
     active_skill: str | None = None
+    reference: dict = field(default_factory=dict)              # "name args" -> (name, args, result)
 
     def record_turn(self, step: int, text: str, executed: list, deferred: list, reason: str,
                     digests: list[str]) -> None:
@@ -74,6 +84,13 @@ class WorkingMemory:
         while len(self.turns) > self.policy.recent_turns:
             self.turns.popleft()
         self.latest = executed
+        for n, a, r in executed:
+            if n in REFERENCE_TOOLS and r.get("ok"):
+                key = f"{n} {json.dumps(a, sort_keys=True, ensure_ascii=False, default=str)}"
+                self.reference.pop(key, None)
+                self.reference[key] = (n, a, r)
+        while len(self.reference) > self.policy.reference_items:
+            self.reference.pop(next(iter(self.reference)))
         self.notes_for_model = []
         if deferred:
             self.notes_for_model.append(
@@ -108,6 +125,12 @@ class WorkingMemory:
             st["active_skill"] = self.active_skill
         if st:
             parts.append("STATE (measured by the harness now):\n" + json.dumps(st, ensure_ascii=False, default=str))
+        latest_ids = {id(r) for _, _, r in self.latest}
+        kept = [(n, a, r) for n, a, r in self.reference.values() if id(r) not in latest_ids]
+        if kept:
+            parts.append("LOOKUPS YOU MADE (latest result of each, kept until you repeat it):\n" + "\n".join(
+                f"{n}({json.dumps(a, ensure_ascii=False, default=str)[:200]}) -> "
+                f"{compact_result(r, self.policy.reference_chars)}" for n, a, r in kept))
         if self.digest:
             parts.append("EPISODE SO FAR (one line per action, oldest routine lines dropped):\n"
                          + "\n".join(line for _, line in self.digest))

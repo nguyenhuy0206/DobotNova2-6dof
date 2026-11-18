@@ -164,6 +164,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/inspection": self.post_inspection,
             "/api/skills/run": self.skills.run,
             "/api/skills/system": self.skills.system,
+            "/api/gripper/driver": self.skills.gripper_driver,
         }
         route = routes.get(self.path)
         if route is None and self.path.startswith("/api/cameras/"):
@@ -235,7 +236,8 @@ def main():
     setup_logging()
 
     Handler.actions = RobotActions(Nova2(args.ip, cfg.timeout_s), cfg)
-    Handler.skills = SkillsAPI(create_primitives(actions=Handler.actions))
+    # the app OWNS the gripper bus (gripper.via_ui): other processes call /api/gripper/driver
+    Handler.skills = SkillsAPI(create_primitives(actions=Handler.actions, owner=True))
     hub = CameraHub(cfg.cameras)
     if os.environ.get("NOVA2_DEPTH") == "1" and "env" in hub:
         hub.select_device("env", "realsense", 0)     # scripts/run_ui.sh --depth

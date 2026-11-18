@@ -7,6 +7,7 @@ called it directly.
 from __future__ import annotations
 
 import ast
+import json
 import operator
 import re
 
@@ -72,6 +73,8 @@ class SkillRunner:
     require_validation: a skill whose validation_status is not "validated" only runs
     live after the operator approves this run (``supervisor(name, params) -> bool``);
     the outcome is stored as supervised evidence. Promotion is an operator command.
+    Autonomous mode (require_validation False): candidates run without asking, and
+    auto_promote_after > 0 promotes one after that many verified successes in a row.
     """
 
     def __init__(self, library: SkillLibrary, constants: dict | None = None, local=None,
@@ -83,6 +86,8 @@ class SkillRunner:
         self.require_validation = require_validation
         self.supervisor = supervisor
         self.episode: str | None = None    # set by the harness, stored with evidence
+        self.auto_promote_after = 0        # autonomous mode: promote after N verified successes in a row
+        self.quarantine_after = 0          # refuse a version that failed this many runs in a row (0 = off)
 
     def list(self, name: str | None = None) -> list[dict]:
         """Compact catalogue (no steps: they cost tokens on every call). name=… gives one
@@ -134,6 +139,13 @@ class SkillRunner:
         if missing:
             raise ValidationError(f"{name}: missing params {missing}")
         live = self.executor.mode == "live"
+        q = self.library.quarantined(name, self.quarantine_after) if live and self.quarantine_after else None
+        if q:
+            raise ValidationError(
+                f"skill '{name}' v{skill.version} is QUARANTINED: it failed its last {q['consecutive_failures']} runs "
+                f"in a row. Failure pattern: {json.dumps(q['stats'], ensure_ascii=False)[:600]}. Fix the procedure "
+                "before running it again: save_skill a new version that changes the step that keeps failing (or its "
+                "defaults), or rollback_skill to a version that worked. Repeating it unchanged is not allowed.")
         supervised = False
         if live and self.require_validation and skill.validation_status != "validated":
             if self.supervisor is None or not self.supervisor(name, params or {}):
@@ -179,7 +191,14 @@ class SkillRunner:
                 result["recovery"] = rec
         if live:
             self.library.record_outcome(name, result["ok"])
-            self.library.add_evidence(name, result["ok"], supervised, result.get("failure"), self.episode)
+            fs = result.get("failed_step") or {}
+            self.library.add_evidence(name, result["ok"], supervised, result.get("failure"), self.episode,
+                                      step=f"{fs.get('kind')}:{fs.get('name')}" if fs else None,
+                                      measured=_measured(trace))
+            if result["ok"] and not self.require_validation and self.auto_promote_after:
+                promoted = self.library.auto_promote(name, self.auto_promote_after)
+                if promoted:
+                    result["promoted"] = promoted
         if self.executor.mode == "dry_run":
             result["note"] = "dry_run: motions validated only, checks not evaluated"
         return result
@@ -188,6 +207,8 @@ class SkillRunner:
              tags: list | None = None, recovery: list | None = None, preconditions: list | None = None,
              success_conditions: list | None = None, failure_conditions: dict | None = None) -> dict:
         from actions.local_steps import CHECKS, RECOVERY_ROUTINES, RECOVERY_TOOLS, ROUTINES
+        if self.local is not None:                       # + Astra's own (src/agent/astra_skills)
+            CHECKS, ROUTINES = self.local.known("check"), self.local.known("routine")  # noqa: N806
         known = set(self.executor.specs) if self.executor else set()
 
         def ok_step(st, where):
@@ -213,13 +234,29 @@ class SkillRunner:
             if st.get("tool") not in RECOVERY_TOOLS and st.get("routine") not in RECOVERY_ROUTINES:
                 raise ValidationError("recovery may only open the gripper or lift (open_gripper, routine lift_to)")
         saved = self.library.revise(Skill(name=name, description=description, steps=steps,
-                                          params=params or {}, tags=tags or [], recovery=recovery or [],
+                                          params=params or {}, tags=[t for t in (tags or []) if t != "builtin"], recovery=recovery or [],
                                           preconditions=preconditions or [],
                                           success_conditions=success_conditions or [],
                                           failure_conditions=failure_conditions or {}))
+        if self.require_validation:
+            note = "new versions are candidates: they run only under operator supervision until promoted"
+        else:
+            note = ("saved as a candidate: you may run it now; it becomes validated after "
+                    f"{self.auto_promote_after or 'enough'} verified successes in a row. If it does worse than the "
+                    "previous version, rollback_skill to that version.")
         return {"saved": name, "version": saved.version, "steps": len(steps),
-                "validation_status": saved.validation_status,
-                "note": "new versions are candidates: they run only under operator supervision until promoted"}
+                "validation_status": saved.validation_status, "note": note}
+
+
+def _measured(trace: list[str]) -> dict:
+    """Key numbers of a run, from its trace (for failure patterns across runs)."""
+    out = {}
+    for line in trace:
+        for key in ("measured_top", "depth", "offset", "error_px", "grip"):
+            m = re.search(rf"\b{key}=(\[[^\]]*\]|-?[\d.]+)", line)
+            if m:
+                out[key] = m.group(1)
+    return out
 
 
 def _brief(i: int, out: dict) -> str:
@@ -230,7 +267,7 @@ def _brief(i: int, out: dict) -> str:
             extra = " z=%.0f" % res["pose"][2]
         if "position" in res:
             extra += f" grip={res['position']} holding={res.get('holding')}"
-    for k in ("z", "iterations", "error_px", "offset", "measured_top"):
+    for k in ("z", "iterations", "error_px", "offset", "measured_top", "depth", "skipped"):
         if k in out:
             extra += f" {k}={out[k]}"
     status = "ok" if out.get("ok") else ("AMBIGUOUS" if out.get("ambiguous") else "FAIL")
@@ -240,7 +277,11 @@ def _brief(i: int, out: dict) -> str:
 
 def _failure_code(st: dict, out: dict) -> str:
     text = str(out.get("detail") or out.get("error") or "").lower()
-    if "contact" in text:
+    if st.get("routine") == "probe_top" and "no contact" in text:
+        return "top_not_found"
+    if st.get("routine") == "grasp_ladder" and "contact" not in text:
+        return "grasp_missed"
+    if "contact" in text and "no contact" not in text:
         return "contact"
     if "check" in st:
         return {"holding": "grasp_missed", "lifted": "not_lifted", "placed": "not_placed",

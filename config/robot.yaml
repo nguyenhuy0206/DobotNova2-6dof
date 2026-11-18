@@ -35,6 +35,7 @@ motion:                  # primitive skills (src/actions/primitives.py)
 gripper:                 # DH-Robotics PGC over RS485 (Modbus RTU)
   tool_length_mm: 118    # flange -> fingertip (mm), measured 11.8 cm; pick/place skills add it
   transport: direct      # direct = USB–RS485 adapter on this Mac; controller = via Nova 2
+  via_ui: true           # only ui/app.py opens the bus; episodes/scripts go through it (one Modbus master)
   port: null             # null = auto-detect /dev/cu.usbserial-*
   slave_id: 1
   baud: 115200

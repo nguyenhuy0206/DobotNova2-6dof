@@ -1,17 +1,18 @@
 """Learning from episodes: every attempt is an episode, reviewed by Astra afterwards.
 
-    run task (episode, robot moves)  ->  reflect (no robot: outcome + skills + notes)
+    run task (episode, robot moves)  ->  reflect (no robot: outcome + skills + knowledge)
 
 The reflection step reads a compact log of the episode it just did and may only use
 memory tools: record_episode_outcome, save_skill (a new name, or a new VERSION of an
 existing skill — the old version and its success/failure counts stay in history),
-write_note, list_skills, read_notes. data/episodes/index.jsonl lists every episode
+knowledge tools (concepts, hypotheses with predictions, observations), list_skills. data/episodes/index.jsonl lists every episode
 with its outcome, so progress over attempts is visible.
 """
 from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 from actions.executor import ActionExecutor, ActionSpec
 from actions.registry import _obj
@@ -20,27 +21,26 @@ from memory.store import EpisodeStore
 
 INDEX_FILE = EPISODES_DIR / "index.jsonl"
 
-REFLECT_TOOLS = ["record_episode_outcome", "list_skills", "save_skill", "write_note", "read_notes"]
+REFLECT_TOOLS = ["record_episode_outcome", "list_skills", "save_skill", "rollback_skill", "retire_skill",
+                 "list_routines", "read_routine", "write_routine", "rollback_routine",
+                 "list_concepts", "define_concept", "update_model", "propose_hypothesis", "archive_knowledge", "query_observations", "read_history"]
 
 REFLECT_INSTRUCTIONS = """\
-You are Astra, reviewing an episode you just ran on a real Dobot Nova 2 arm (log below).
-You cannot move the robot now: you only have memory tools. Be honest and concrete.
+You are Astra, reviewing an episode you just ran on a real Dobot Nova 2 arm (log below; wrist images taken
+around failed grasps / failed runs and after lifts, when there were any). You cannot move the robot now. Be
+honest and concrete.
 
-1. record_episode_outcome: success = the task was achieved deliberately and verified by camera.
-   blocks_moved = blocks deliberately picked AND placed on the table (knocked-over blocks don't count).
-2. Skills — propose improvements, do not rewrite what works. Every save_skill creates a CANDIDATE
-   version that only runs under operator supervision until the operator promotes it, so save only when
-   the log shows a concrete reason:
-   - pick_block_wrist / place_block_on_table run locally (checks + routines). If they failed the same way
-     more than once, save a new version with changed parameter DEFAULTS (depth_mm, target_u/target_v,
-     u_per_dy/v_per_dx, release_mm) or an extra check — never one episode's coordinates.
-   - If the episode found a new working procedure with primitives, save it as a new skill with params,
-     checks ({check: …}) and a recovery (open_gripper / routine lift_to only).
-   - Do not save pure camera-inspection skills — look is already one call.
-3. Notes — SHORT, for the next attempt: if grasp_trials lines are missing, write them (one per attempt,
-   ≤ 200 chars: "<block> rz=… depth=… centred=… -> grip=… holding=… lifted=…"); then at most ONE
-   "grasp_best" note (what worked, what to try next). Never "do not retry"-style advice.
-4. Use as few calls as possible: you may call several tools in one turn.
+1. record_episode_outcome: success = the task in the log's TASK line was achieved deliberately and verified
+   by camera. blocks_moved = how many of the objects that task asked to move were deliberately moved to where
+   it wanted them (objects displaced by accident don't count).
+   The summary says WHY it failed: confirmed causes (cause -> fix) and, for the rest, the open hypotheses
+   and the test to run first next episode.
+2. Change what the evidence supports: skills (save_skill / rollback_skill / retire_skill), your routines
+   and checks (list_routines / read_routine / write_routine / rollback_routine), knowledge (list_concepts /
+   define_concept / update_model / propose_hypothesis / archive_knowledge; query_observations shows the
+   recorded numbers, read_history earlier episodes). The "Knowledge check" below lists the prediction errors
+   and the failures no hypothesis covers. Every save_skill creates a CANDIDATE version.
+3. Use as few calls as possible: you may call several tools in one turn.
 Finish with a 3-line plain-text summary.
 """
 
@@ -61,14 +61,19 @@ def summarize_episode(store: EpisodeStore, episode_id: str, limit: int = 14000) 
                 if isinstance(res, dict):
                     keep = {k: v for k, v in res.items() if k in (
                         "pose", "holding", "position", "grip_state", "note", "saved", "version", "points",
-                        "rms_mm", "leave_one_out_mm", "skill", "ok", "failed_step", "failure", "detail", "trace")}
+                        "rms_mm", "leave_one_out_mm", "skill", "ok", "failed_step", "failure", "detail", "trace",
+                        "calibration_valid", "error_mm", "hypotheses", "hypothesis", "verdict", "promoted")}
                     if "objects" in res:
                         keep["objects"] = [(o.get("label"), o.get("base_xyz_mm")) for o in res["objects"]]
                     res = keep
                 out = json.dumps(res, ensure_ascii=False, default=str)[:1500 if e["name"] == "run_skill" else 300]
             else:
                 out = "ERROR " + str(r.get("error", ""))[:300]
-            lines.append(f"[{e['step']}] {e['name']}({json.dumps(e.get('args', {}), ensure_ascii=False)[:200]}) -> {out}")
+            if r.get("diagnosis"):
+                out += f" [{r['diagnosis'].get('failure_id')}]"
+            lines.append(f"[{e['step']}] {e['name']}({json.dumps(e.get('args', {}), ensure_ascii=False)[:300]}) -> {out}")
+        elif ev == "diagnosis":
+            lines.append("DIAGNOSIS: " + json.dumps(e.get("per_failure", []), ensure_ascii=False)[:2500])
         elif ev == "end":
             lines.append(f"END: {e.get('reason')}")
     text = "\n".join(lines)
@@ -104,7 +109,8 @@ def history(index_file=INDEX_FILE, last: int = 10) -> list[dict]:
 
 def reflect_executor(main: ActionExecutor, recorder: OutcomeRecorder) -> ActionExecutor:
     spec = ActionSpec("record_episode_outcome",
-                      "Record how the episode went: success (verified by camera), blocks_moved, summary.",
+                      "Record how the episode went: success (the task achieved deliberately, verified by camera), "
+                      "blocks_moved (objects the task asked to move, deliberately moved where it wanted them), summary.",
                       recorder.record,
                       _obj({"success": {"type": "boolean"}, "blocks_moved": {"type": "integer", "minimum": 0},
                             "summary": {"type": "string"}}, ["success", "summary"]))
@@ -115,7 +121,7 @@ def reflect_executor(main: ActionExecutor, recorder: OutcomeRecorder) -> ActionE
 # ---------------------------------------------------------------------------
 # Review of MANY episodes at once: patterns across attempts -> concrete skills
 # ---------------------------------------------------------------------------
-REVIEW_ALL_TOOLS = ["list_skills", "save_skill", "delete_skill", "write_note", "read_notes"]
+REVIEW_ALL_TOOLS = ["list_skills", "save_skill", "delete_skill", "list_concepts", "define_concept", "update_model", "propose_hypothesis", "archive_knowledge", "query_observations", "read_history"]
 
 REVIEW_ALL_INSTRUCTIONS = """\
 You are Astra. Below are the logs of ALL your recent grasp episodes on a real Dobot Nova 2
@@ -130,9 +136,8 @@ close left<->right. A block ready to grasp sits BETWEEN the two fingertips, edge
    not centred (block beyond/beside the fingertips) | closed too high (fingers met air: grip 500,
    holding=false) | turned (block edges at an angle -> corner/edge grip 700+, slips) | knocked
    during descent (finger landed on the block) | other. Compare with the successes.
-2. write_note topic "grasp_analysis": ONE compact table, a line per episode
-   ("<episode> <block> rz=… z=… grip=… -> cause"), then ONE note "grasp_best": what the
-   successes had in common and the exact settings to use next (≤ 300 characters each).
+2. Knowledge: for each cause you found, the concept it is about (list_concepts / define_concept) and a
+   hypothesis with a prediction (propose_hypothesis when -> expect); query_observations shows the numbers.
 3. Rebuild the skill set so it is CONCRETE and unambiguous — exact numbers, explicit wrist looks,
    no "adapt as needed". Suggested split (each one run_skill call, so few API calls per attempt):
    - hover_over_block(x, y, rz, z_top): open_gripper, move to z_top + 95 (top of approach zone), look wrist.
@@ -167,6 +172,66 @@ def _wrist_image_before_grasp(store: EpisodeStore, episode_id: str) -> str | Non
     if last and Path(last).exists():
         return base64.b64encode(Path(last).read_bytes()).decode()
     return None
+
+
+def _failed_attempt(e: dict) -> str | None:
+    """Short outcome text when this tool event is a failed grasp / failed run, else None."""
+    r = e.get("result") or {}
+    res = r.get("result") if isinstance(r.get("result"), dict) else {}
+    if e["name"] == "close_gripper" and r.get("ok") and res.get("holding") is False:
+        return f"grasp missed (closed to {res.get('position')})"
+    if e["name"] in ("run_skill", "run_routine") and r.get("ok") and res.get("ok") is False:
+        return f"{res.get('failure') or 'failed'}: {str(res.get('detail', ''))[:110]}"
+    if not r.get("ok") and "CONTACT" in str(r.get("error", "")):
+        return "contact: " + str(r.get("error"))[:110]
+    return None
+
+
+def failure_images(store: EpisodeStore, episode_id: str, limit: int = 4) -> list[tuple[str, str]]:
+    """(caption, base64 jpeg) around each failed grasp / failed skill or routine run / contact:
+    the last wrist image BEFORE it (when one was taken since the previous motion boundary) and
+    the wrist image right AFTER it (the harness auto-looks after a failure). The last `limit`."""
+    import base64
+
+    def wrist_image(ev: dict) -> str | None:
+        fr = (ev.get("result") or {}).get("result")
+        if ev["name"] == "look" and (ev.get("args") or {}).get("camera") == "wrist" and isinstance(fr, dict) \
+                and fr.get("image_file") and Path(fr["image_file"]).exists():
+            return fr["image_file"]
+        return None
+
+    events = [e for e in store.load(episode_id) if e.get("event") == "tool"]
+    out: list[tuple[str, str]] = []
+    for i, e in enumerate(events):
+        what = _failed_attempt(e)
+        if what is None:
+            continue
+        args = json.dumps(e.get("args") or {}, ensure_ascii=False)[:120]
+        head = f"step {e.get('step')} {e['name']}({args}) -> {what}"
+        before = next((wrist_image(b) for b in reversed(events[max(0, i - 4):i]) if wrist_image(b)), None)
+        after = next((wrist_image(f) for f in events[i + 1:i + 3] if wrist_image(f)), None)
+        for tag, path in (("BEFORE", before), ("AFTER", after)):
+            if path:
+                out.append((f"{head} [{tag}]", base64.b64encode(Path(path).read_bytes()).decode()))
+    return out[-limit:]
+
+
+def post_lift_images(store: EpisodeStore, episode_id: str, limit: int = 3) -> list[tuple[str, str]]:
+    """(caption, base64 jpeg) of the wrist images the harness took after each lift while holding
+    (how the object sits in the fingers), the last `limit`. Shown in the review even when the
+    episode succeeded."""
+    import base64
+
+    out = []
+    for e in store.load(episode_id):
+        if e.get("event") != "tool" or not e.get("post_lift"):
+            continue
+        fr = (e.get("result") or {}).get("result")
+        path = fr.get("image_file") if isinstance(fr, dict) else None
+        if path and Path(path).exists():
+            out.append((f"step {e.get('step')}: after lifting {e.get('lift_mm')} mm, gripper position "
+                        f"{e.get('grip_position')}", base64.b64encode(Path(path).read_bytes()).decode()))
+    return out[-limit:]
 
 
 def grasp_episodes(store: EpisodeStore) -> list[str]:
@@ -206,6 +271,6 @@ def review_all(session, episodes: list[str] | None = None, per_episode_chars: in
     cfg.max_output_tokens = max(cfg.max_output_tokens, 8000)     # whole skills are written in one call
     reviewer = AgentHarness(session.harness.client, ActionExecutor(specs, mode="live"), cfg,
                             episodes=EpisodeStore(store.root / "reflections"), skills=lib,
-                            send_images=False, notes=session.notes)
+                            send_images=False, notes=session.knowledge)
     text = reviewer.run("\n\n".join(parts), images=images)
     return {"episodes": episodes, "images": len(images), "review": text}

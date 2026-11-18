@@ -24,6 +24,7 @@ from actions.executor import ActionExecutor
 from agent.astra_client import AstraClient
 from agent.chunking import ChunkPolicy
 from agent.context import ContextPolicy, WorkingMemory
+from agent.repeats import RepeatGuard, signature
 from agent.events import EventRouter, aborts_chunk, digest_line
 from agent.metrics import EpisodeMetrics, usage_of
 from agent.tools import to_openai_tools
@@ -71,6 +72,8 @@ class HarnessOptions:
     chunk: ChunkPolicy = field(default_factory=lambda: ChunkPolicy(enabled=False))
     images: ImagePolicy = field(default_factory=lambda: ImagePolicy(mode="all"))
     max_episode_tokens: int = 0        # 0 = no cap; else stop the episode when reached
+    max_repeats: int = 0               # same action / hypothesis this many times in a row -> stop (0 = off)
+    post_lift_image: bool = False      # record a wrist image once per grasp after lifting (log/review only)
 
     @classmethod
     def from_variant(cls, variant: str = "V0", **cfg) -> "HarnessOptions":
@@ -86,16 +89,20 @@ class HarnessOptions:
                    images=ImagePolicy(mode="selective" if bounded else "all",
                                       env_detail=cfg.get("env_image_detail", "low"),
                                       wrist_detail=cfg.get("wrist_image_detail", "high")),
-                   max_episode_tokens=int(cfg.get("max_episode_tokens", 0) or 0))
+                   max_episode_tokens=int(cfg.get("max_episode_tokens", 0) or 0),
+                   max_repeats=int(cfg.get("max_repeats", 0) or 0),
+                   post_lift_image=bool(cfg.get("post_lift_image", False)))
 
 
 class AgentHarness:
     def __init__(self, client: AstraClient, executor: ActionExecutor, config: AgentConfig,
                  episodes: EpisodeStore | None = None, skills: SkillLibrary | None = None,
                  send_images: bool = True, notes=None, options: HarnessOptions | None = None,
-                 state_fn=None, skill_runner=None):
+                 state_fn=None, skill_runner=None, investigation=None, observer=None):
         self.client = client
-        self.notes = notes          # memory.notes.NotesStore: lessons from earlier runs
+        self.notes = notes          # memory.knowledge.KnowledgeStore (or legacy NotesStore): what earlier runs found
+        self.observer = observer    # (name, args, result) -> {"id", "prediction_errors"?}: the harness records
+                                    # every robot action as an observation, the model does not have to
         self.executor = executor
         self.config = config
         self.episodes = episodes or EpisodeStore()
@@ -104,9 +111,11 @@ class AgentHarness:
         self.options = options or HarnessOptions()
         self.state_fn = state_fn        # () -> compact measured state for the bounded context
         self.skill_runner = skill_runner
+        self.investigation = investigation   # agent.diagnosis.Investigation: failures -> hypotheses -> tests
         self.last_episode: str | None = None
         self.last_metrics: dict | None = None
         self.last_turn: dict = {}
+        self.last_diagnosis: dict | None = None
 
     # ------------------------------------------------------------------ helpers
     def _take_image(self, episode: str, step: int, name: str, result: dict) -> str | None:
@@ -122,30 +131,75 @@ class AgentHarness:
 
     def _instructions(self, task: str) -> str:
         text = self.config.system_prompt or DEFAULT_INSTRUCTIONS
-        recalled = self.skills.search(task)
-        if recalled:
-            text += "\n\nRelevant skills from memory:\n" + "\n".join(
-                f"- {s.name} v{s.version} [{s.validation_status}]: {s.description} params={json.dumps(s.params)}"
-                + ("" if self.options.context.mode == "bounded" else f" steps={json.dumps(s.steps)}")
-                for s in recalled)
+        # the library as verified facts only (name, version, status, runs of the current version):
+        # descriptions are written experience and stay out of the prompt (list_skills NAME shows them)
+        index = self.skills.index() if hasattr(self.skills, "index") else []
+        if index:
+            text += ("\n\nYour skill library (runs = camera-verified outcomes of the CURRENT version; "
+                     "list_skills NAME shows its steps):\n" + "\n".join(
+                         f"- {s['name']} v{s['version']} [{s['status']}] {s['ok']} ok / {s['fail']} failed · "
+                         f"params {', '.join(s['params'])}" for s in index))
         if self.notes:
             lessons = (self.notes.digest() if self.options.context.mode == "bounded" and hasattr(self.notes, "digest")
                        else self.notes.recent_text())
             if lessons:
-                text += "\n\nYour notes from earlier runs (facts you measured; re-check if they look wrong):\n" + lessons
+                header = getattr(self.notes, "prompt_header",
+                                 "Your notes from earlier runs (facts you measured; re-check if they look wrong):")
+                text += "\n\n" + header + "\n" + lessons
         if self.options.chunk.enabled:
             text += CHUNK_HINT.format(L=self.options.chunk.max_horizon)
         if self.options.context.mode == "bounded":
             text += BOUNDED_HINT
         return text
 
+    def _moves(self, name: str) -> bool:
+        spec = self.executor.specs.get(name)
+        return spec is not None and (spec.moves_robot or spec.delegates)
+
+    def _post_lift_image(self, episode: str, step: int, held: dict) -> None:
+        """Once per grasp, when the gripper holds something and has been lifted ≥ 30 mm since it
+        caught it: a wrist image of how the object sits in the fingers. For the log, the
+        observations and the review only — it is NOT put into the model's context."""
+        st = self._state() or {}
+        grip, pose = st.get("gripper") or {}, st.get("pose")
+        z = pose[2] if isinstance(pose, list) and len(pose) > 2 else None
+        if "caught" not in str(grip.get("grip_status", "")) or z is None:
+            held.clear()
+            return
+        if "z0" not in held:
+            held.update(z0=z, position=grip.get("position"))
+            return
+        if held.get("taken") or z - held["z0"] < 30 or "look" not in self.executor.specs:
+            return
+        held["taken"] = True
+        args = {"camera": "wrist", "image": "always"}
+        r = self.executor.execute("look", args)
+        self._take_image(episode, step, "post-lift-wrist", r)
+        self.episodes.append(episode, {"event": "tool", "step": step, "name": "look", "auto": True, "post_lift": True,
+                                       "grip_position": held.get("position"), "lift_mm": round(z - held["z0"], 1),
+                                       "args": args, "result": r})
+        self._observe("look", {"camera": "wrist", "purpose": "post_lift"}, r)
+
+    def _observe(self, name: str, args: dict, result: dict) -> dict | None:
+        if self.observer is None:
+            return None
+        try:
+            return self.observer(name, args, result)
+        except Exception as exc:  # noqa: BLE001 — recording must never break the run
+            log.warning("observation not recorded for %s: %s", name, exc)
+            return None
+
     def _state(self) -> dict | None:
         if self.state_fn is None:
             return None
         try:
-            return self.state_fn()
+            st = self.state_fn()
         except Exception as exc:  # noqa: BLE001 — the state is context, never a reason to crash
             return {"state_error": str(exc)[:160]}
+        diag = self.investigation.state() if self.investigation is not None else None
+        if diag and isinstance(st, dict):
+            st = {**st, "diagnosis": diag}
+        return st
 
     def _create(self, episode: str, step: int, metrics: EpisodeMetrics, n_images: int, **kw):
         t0 = time.time()
@@ -154,10 +208,13 @@ class AgentHarness:
         self.episodes.append(episode, {"event": "usage", "step": step, **rec})
         return response
 
-    def _tool_zone(self) -> tuple[float | None, float | None]:
+    def _tool_zone(self) -> tuple[float | None, float | None, float | None]:
+        """(fingertip z, approach-zone top, gripper position) from the measured state."""
         st = self._state() or {}
         pose = st.get("pose")
-        return (pose[2] if isinstance(pose, list) and len(pose) > 2 else None), st.get("approach_zone_top")
+        grip = (st.get("gripper") or {}).get("position")
+        return ((pose[2] if isinstance(pose, list) and len(pose) > 2 else None), st.get("approach_zone_top"),
+                grip if isinstance(grip, (int, float)) else None)
 
     # ------------------------------------------------------------------ main loop
     def run(self, task: str, images: list[str] | None = None) -> str:
@@ -168,8 +225,16 @@ class AgentHarness:
         self.last_episode = episode
         if self.skill_runner is not None:
             self.skill_runner.episode = episode
+        if self.notes is not None and hasattr(self.notes, "episode"):
+            self.notes.episode = episode            # evidence recorded now is tagged with this episode
+        inv = self.investigation
+        self.last_diagnosis = None
+        if inv is not None:
+            inv.start(episode)
         metrics = EpisodeMetrics(variant=opt.variant)
         router = EventRouter()
+        repeats, repeat_stop = RepeatGuard(opt.max_repeats), None
+        held: dict = {}                     # the current grasp: z when caught, whether its image was taken
         images_policy = ImagePolicy(**{k: getattr(opt.images, k) for k in ("mode", "env_detail", "wrist_detail",
                                                                            "same_threshold")})
         tools = to_openai_tools(self.executor.list())
@@ -213,8 +278,8 @@ class AgentHarness:
                     # usually output cut off by max_output_tokens: tell the model, don't crash
                     args, bad = {"_raw": (call.arguments or "")[:200]}, True
                 parsed.append(SimpleNamespace(name=call.name, call_id=call.call_id, parsed_args=args, bad=bad))
-            tip_z, zone_top = self._tool_zone() if opt.chunk.enabled else (None, None)
-            run_now, deferred, why = opt.chunk.split(parsed, tip_z, zone_top)
+            tip_z, zone_top, grip = self._tool_zone() if opt.chunk.enabled else (None, None, None)
+            run_now, deferred, why = opt.chunk.split(parsed, tip_z, zone_top, grip)
 
             outputs, sent_images, executed, digests = [], [], [], []
             aborted = False
@@ -229,8 +294,24 @@ class AgentHarness:
                 else:
                     if call.name == "run_skill":
                         router.handling = ((call.parsed_args.get("params") or {}).get("color") or router.handling)
-                    result = self.executor.execute(call.name, call.parsed_args)
+                    refusal = inv.before(call.name, call.parsed_args) if inv is not None else None
+                    if refusal:
+                        result = {"ok": False, "action": call.name, "executed": False, "error": refusal}
+                    else:
+                        result = self.executor.execute(call.name, call.parsed_args)
+                        diag = inv.after(call.name, call.parsed_args, result) if inv is not None else None
+                        if diag:
+                            result["diagnosis"] = diag
+                        seen = self._observe(call.name, call.parsed_args, result)
+                        if seen:
+                            result["observation"] = seen["id"]
+                            if seen.get("prediction_errors"):
+                                result["prediction_errors"] = seen["prediction_errors"]
                 metrics.add_action(call.name, result)
+                if opt.post_lift_image and result.get("executed", True) and self._moves(call.name):
+                    self._post_lift_image(episode, step, held)
+                if repeats.limit > 0 and signature(call.name, call.parsed_args, result) is not None:
+                    repeat_stop = repeat_stop or repeats.add(call.name, call.parsed_args, result, self._state())
                 image = self._take_image(episode, step, call.name, result)
                 events = router.classify(call.name, call.parsed_args, result)
                 if image is not None and self.send_images:
@@ -256,7 +337,7 @@ class AgentHarness:
                         wm.progress.append(f"{p['color']} placed at ({p.get('x')}, {p.get('y')}) — skill verified")
                 outputs.append({"type": "function_call_output", "call_id": call.call_id,
                                 "output": json.dumps(result, ensure_ascii=False, default=str)})
-                if opt.chunk.enabled and aborts_chunk(events):
+                if (opt.chunk.enabled and aborts_chunk(events)) or repeat_stop:
                     aborted = True
             self.last_turn = {"executed": len(executed), "deferred": len(deferred), "reason": why}
             if deferred:
@@ -270,6 +351,9 @@ class AgentHarness:
             # camera images the router asked for but no look delivered: say so in the context
             if router.stop_reason:
                 reason, final = "robot_alarm", f"Stopped: {router.stop_reason}"
+                break
+            if repeat_stop:
+                reason, final = "repeated", f"Stopped: {repeat_stop}"
                 break
             if opt.max_episode_tokens and metrics.tokens_so_far() >= opt.max_episode_tokens:
                 reason, final = "token_budget", (f"Stopped: token budget {opt.max_episode_tokens} reached "
@@ -313,6 +397,9 @@ class AgentHarness:
 
         if final is None:
             final = f"Stopped after max_steps={self.config.max_steps}. Last: {response.output_text}"
+        if inv is not None and inv.failures:
+            self.last_diagnosis = inv.summary()
+            self.episodes.append(episode, {"event": "diagnosis", **self.last_diagnosis})
         self.episodes.append(episode, {"event": "end", "reason": reason})
         self.last_metrics = metrics.summary()
         self.episodes.append(episode, {"event": "metrics", **self.last_metrics})

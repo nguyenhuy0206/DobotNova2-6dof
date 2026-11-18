@@ -5,6 +5,8 @@ Kept separate from app.py so the web server stays a thin router:
     GET  /api/skills          -> catalogue (name, description, JSON-schema params, flags)
     GET  /api/skills/state    -> live robot + gripper state (never blocks on a running move)
     POST /api/skills/run      -> {"name": ..., "args": {...}, "confirm": true}
+    POST /api/gripper/driver  -> {"op": status | init | go_to, …}: the gripper driver of THIS process,
+                                 for other processes (gripper.via_ui) — the app is the bus's only master
 """
 from __future__ import annotations
 
@@ -56,3 +58,17 @@ class SkillsAPI:
         if spec.moves_robot:
             require_confirm(data.get("confirm"), "Bật 'Workspace clear' trước khi chạy lệnh chuyển động.")
         return self.executor.execute(name, args)
+
+    def gripper_driver(self, data: dict) -> dict:
+        """Driver-level gripper calls from other processes (drivers.gripper.PGCGripperRemote)."""
+        g = self.primitives.gripper                     # opened + initialized on first use, one lock
+        op = str(data.get("op", ""))
+        if op == "status":
+            return g.status()
+        if op == "init":
+            return g.init(force_reinit=bool(data.get("force_reinit")), full=bool(data.get("full")))
+        if op == "go_to":
+            require_confirm(data.get("confirm"), "gripper motion needs confirm")
+            return g.go_to(int(data["position"]), int(data.get("force", 30)), int(data.get("speed", 50)),
+                           wait=bool(data.get("wait", True)))
+        raise ValidationError(f"unknown gripper op {op!r} (status | init | go_to)")

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 import _bootstrap  # noqa: F401
 from agent.explore import build_explore
@@ -70,8 +71,9 @@ def main() -> None:
     loo = report["leave_one_out_mm"]["median"]
     verdict = "GOOD" if loo <= 10 else "OK — verify with the wrist camera" if loo <= 20 else "POOR — re-run"
     print(f"\nAccuracy (leave-one-out median): {loo} mm  →  {verdict}")
-    s.notes.add(f"Env camera auto-calibrated: {report['points']} points, leave-one-out median {loo} mm, "
-                f"max {report['leave_one_out_mm']['max']} mm ({verdict}).", "calibration")
+    s.knowledge.obs.add({"action": "auto_calibrate", "ok": True, "calibration.points": report["points"],
+                         "calibration.loo_median_mm": loo, "calibration.loo_max_mm": report["leave_one_out_mm"]["max"]},
+                        episode=None, source="auto_calibrate", note=verdict)
 
     # Sanity check: block tops must be above the table.
     s.kit.scene.object_z_max = (p.table_z_mm + 150) if p.table_z_mm is not None else None

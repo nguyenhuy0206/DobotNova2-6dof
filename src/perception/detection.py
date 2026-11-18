@@ -27,7 +27,13 @@ class Detection:
     center: tuple[int, int]           # u, v
     area: float
     score: float = 1.0
-    angle_deg: float | None = None     # minAreaRect edge angle, folded to 0–90
+    angle_deg: float | None = None     # minAreaRect edge angle, folded to 0–90 (None = not measurable)
+    cut_by_edge: bool = False          # the blob touches the image border: only part of the object is seen
+
+
+# An edge angle is only reported when the blob can show one: big enough (a 15 px blob always
+# reads 0°) and not cut off by the image border (a cropped blob's edges are the frame's).
+MIN_ANGLE_SIDE_PX = 30
 
 
 def detect_colored_objects(bgr: np.ndarray, colors: list[str] | None = None,
@@ -48,12 +54,15 @@ def detect_colored_objects(bgr: np.ndarray, colors: list[str] | None = None,
             mask |= cv2.inRange(hsv, np.array(lo), np.array(hi))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        H, W = mask.shape[:2]
         for c in contours:
             area = cv2.contourArea(c)
             if area < min_area:
                 continue
             x, y, w, h = cv2.boundingRect(c)
-            angle = float(cv2.minAreaRect(c)[2]) % 90.0
+            cut = x <= 1 or y <= 1 or x + w >= W - 1 or y + h >= H - 1
+            (_, _), (rw, rh), ang = cv2.minAreaRect(c)
+            angle = None if cut or min(rw, rh) < MIN_ANGLE_SIDE_PX else round(float(ang) % 90.0, 1)
             found.append(Detection(label, (x, y, w, h), (x + w // 2, y + h // 2), float(area),
-                                   angle_deg=round(angle, 1)))
+                                   angle_deg=angle, cut_by_edge=cut))
     return sorted(found, key=lambda d: -d.area)

@@ -74,9 +74,18 @@ class MotionConfig:
     approach_height_mm: float = 120.0
     approach_max_step_mm: float = 25.0
     approach_speed: int = 3
-    stall_s: float = 0.8                # no progress for this long while moving -> contact
+    stall_s: float = 0.3           # no progress for this long while moving -> contact
     stall_mm: float = 0.3
     contact_backoff_mm: float = 15.0
+    # a controller collision alarm during an approach-zone move is a contact too: clear it,
+    # check the robot is enabled again, back off and fail with "CONTACT …" (false = stop as before)
+    collision_recovery: bool = True
+    # gripper vs the robot's own elbow / upper arm / forearm (actions/self_collision.py): moves whose
+    # path comes closer than this (gripper axis to link axis) are refused before moving; 0 = off
+    self_clearance_mm: float = 65.0
+    # wrist links vs the upper arm when the elbow folds (same module); 0 = off
+    wrist_clearance_mm: float = 190.0
+    recovery_timeout_s: float = 12.0
     home_joints: list[float] = field(default_factory=lambda: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0])
 
 
@@ -86,6 +95,9 @@ class GripperConfig:
     # (the flange), so pick/place heights add this. MEASURE IT before picking.
     tool_length_mm: float = 0.0
     transport: str = "direct"           # direct (USB–RS485) | controller
+    # true: only ui/app.py opens the bus; every other process (episodes, scripts) sends its gripper
+    # calls to the app (drivers.gripper.PGCGripperRemote) — one Modbus master, no clashes
+    via_ui: bool = False
     port: str | None = None             # None = auto-detect /dev/cu.usbserial-*
     slave_id: int = 1
     baud: int = 115200
@@ -144,6 +156,8 @@ class AgentConfig:
     # Variable holding the API key, looked up in the environment after .env is loaded.
     # Falls back to the SDK default (OPENAI_API_KEY exported in your shell).
     api_key_env: str = "gpt6-key"
+    # OpenAI-compatible endpoint; "" = the SDK default (OPENAI_BASE_URL or api.openai.com)
+    base_url: str = ""
     max_output_tokens: int = 1000
     max_steps: int = 20
     max_speed: int = 10        # % cap on every robot motion the agent commands
@@ -187,6 +201,7 @@ def load_agent_config(path: Path = CONFIG_DIR / "agent.yaml") -> AgentConfig:
     load_dotenv()
     cfg = _build(AgentConfig, _read_yaml(path))
     cfg.model = os.environ.get("ASTRA_MODEL", cfg.model)
+    cfg.base_url = os.environ.get("ASTRA_BASE_URL", cfg.base_url)
     cfg.execution_mode = os.environ.get("ASTRA_EXECUTION_MODE", cfg.execution_mode)
     if cfg.execution_mode not in {"dry_run", "confirm", "live"}:
         raise ValueError("execution_mode must be dry_run, confirm or live")

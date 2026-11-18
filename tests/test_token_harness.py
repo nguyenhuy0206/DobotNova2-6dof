@@ -318,7 +318,7 @@ def test_wrist_centring_converges():
 def test_wrist_centring_gives_up_when_mapping_is_wrong():
     cam = WristCam(420, 190, sign=-1.0)                    # image moves the other way
     out = LocalSteps(None, cam, MoveRecorder(cam), settle_s=0).routine("wrist_center", {}, color="green")
-    assert not out["ok"] and "converge" in out["detail"]
+    assert not out["ok"] and ("converge" in out["detail"] or "would move" in out["detail"])
 
 
 def test_builtin_pick_place_skills_validate_in_dry_run(prims, tmp_path):
@@ -382,10 +382,13 @@ def test_builtin_skill_upgrades_but_astra_versions_are_kept(tmp_path):
     assert ensure_pick_place_skills(lib) == [] and lib.get("pick_block_wrist").description == "Astra's own"
 
 
-def test_pick_lifts_out_first_and_recovers_above_the_zone():
-    from agent.pick_place_skills import PICK
-    assert PICK.steps[0] == {"routine": "lift_to", "args": {"z": "={z_top} + hover_mm", "step_mm": 23, "speed": 2}}
-    assert PICK.recovery[-1]["args"]["z"] == "={z_top} + hover_mm"
+def test_pick_has_no_measurement_lock_or_probe():
+    from agent.pick_place_skills import BUILTIN, PICK
+    assert [s.name for s in BUILTIN] == ["pick_block_wrist", "place_block_on_table"]
+    assert PICK.steps[0]["routine"] == "approach"
+    routines = [s.get("routine") for s in PICK.steps]
+    assert "probe_top" not in routines and "grasp_ladder" in routines
+    assert not any(c["check"] == "contact_calibrated" for c in PICK.preconditions)
 
 
 def test_z_top_must_match_the_taught_cube_top():
@@ -525,3 +528,76 @@ def test_measured_top_drives_the_grasp_height(prims, tmp_path):
                                                             "rx": 180, "ry": 0, "rz": 0}}]))
     out = r.run("t", {"z_top": 380})
     assert out["ok"] and out["last_result"]["pose"][2] == pytest.approx(292)
+
+
+# ---------------------------------------------------------------- autonomy guards
+def test_wrist_centring_never_wanders_far():
+    cam = WristCam(355 + 5.6 * 60, 140)                   # 60 mm away: further than any real centring needs
+    local = LocalSteps(None, cam, MoveRecorder(cam), settle_s=0)
+    out = local.routine("wrist_center", {}, color="green", max_iter=10, max_travel_mm=500)   # capped at 50
+    moved = (sum(m["dx"] for m in local.executor.moves), sum(m["dy"] for m in local.executor.moves))
+    assert not out["ok"] and "would move" in out["detail"]
+    assert (moved[0] ** 2 + moved[1] ** 2) ** 0.5 <= 50
+
+
+def test_z_top_below_table_is_refused():
+    local = LocalSteps(NS(table_z_mm=42.0), None, None, settle_s=0)
+    assert not local.check("z_top_plausible", {}, z_top=30.6)["ok"]
+    assert local.check("z_top_plausible", {}, z_top=79)["ok"]
+
+
+class ReachLimit:
+    """move_relative executor: z above 160 is out of reach unless the tip moved towards the base."""
+    mode = "live"
+
+    def __init__(self):
+        self.pose = [-358.0, -502.0, 150.0]
+
+    def execute(self, name, args):
+        x, y, z = self.pose
+        nx, ny, nz = x + args.get("dx", 0), y + args.get("dy", 0), z + args.get("dz", 0)
+        if nz > 160 and (nx ** 2 + ny ** 2) ** 0.5 > 600:
+            return {"ok": False, "error": "pose not reachable (no inverse-kinematics solution)"}
+        self.pose = [nx, ny, nz]
+        return {"ok": True, "result": {"pose": self.pose + [180, 0, 0]}}
+
+
+def test_lift_detours_towards_the_base_when_out_of_reach():
+    ex = ReachLimit()
+    local = LocalSteps(NS(get_state=lambda: {"pose": ex.pose + [180, 0, 0]}), None, ex, settle_s=0)
+    out = local.routine("lift_to", {}, z=180, step_mm=23)
+    assert out["ok"] and out["z"] == pytest.approx(180) and out["detours"] >= 1
+    assert (ex.pose[0] ** 2 + ex.pose[1] ** 2) ** 0.5 <= 600
+
+
+def test_autonomous_runner_runs_candidates_and_promotes(prims, tmp_path):
+    from agent.pick_place_skills import ensure_pick_place_skills
+    lib = SkillLibrary(tmp_path / "s.json")
+    ensure_pick_place_skills(lib)
+    r = SkillRunner(lib, constants={"table_z": 42.0}, require_validation=False)
+    r.auto_promote_after = 2
+    ex = ActionExecutor(build_registry(prims, runner=r), mode="live")
+    r.executor = ex
+    lib.add_evidence("place_block_on_table", True, False)
+    lib.add_evidence("place_block_on_table", True, False)
+    assert lib.auto_promote("place_block_on_table", 2)["promoted"]
+    assert lib.get("place_block_on_table").validation_status == "validated"
+    lib.add_evidence("pick_block_wrist", True, False)
+    lib.add_evidence("pick_block_wrist", False, False)
+    assert lib.auto_promote("pick_block_wrist", 2) is None          # a failure among the last runs
+    saved = r.save("my_pick", "draft", [{"tool": "open_gripper"}])
+    assert "you may run it now" in saved["note"]
+    assert lib.retire("my_pick", "never worked")["retired"] == "my_pick"
+    assert lib.get("my_pick").validation_status == "deprecated"
+    with pytest.raises(ValueError, match="built-in"):
+        lib.retire("pick_block_wrist")
+
+
+def test_prompt_carries_the_skill_index_not_descriptions(tmp_path):
+    lib = SkillLibrary(tmp_path / "s.json")
+    lib.save(Skill(name="pick_x", description="SECRET RAW TEXT from an old episode", steps=[], params={"x": None}))
+    lib.save(Skill(name="old_one", description="old", steps=[], params={}))
+    lib.retire("old_one", "never run")
+    text = AgentHarness(None, None, AgentConfig(), skills=lib)._instructions("pick a block")
+    assert "pick_x v1 [candidate] 0 ok / 0 failed · params x" in text
+    assert "SECRET RAW TEXT" not in text and "old_one" not in text

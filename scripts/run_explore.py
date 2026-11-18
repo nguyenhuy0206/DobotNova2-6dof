@@ -89,6 +89,8 @@ def main() -> None:
             print(f"\n========== episode {i}/{episodes}")
             out = s.run_episode(task, reflect=not args.no_reflect)
             print(f"\n[report] {out['report']}")
+            if out.get("diagnosis"):
+                print(f"[diagnosis] {out['diagnosis']}")
             if "reflection" in out:
                 o = out.get("outcome") or {}
                 print(f"[outcome] {'SUCCESS' if o.get('success') else 'FAIL'} · moved {o.get('blocks_moved', '?')} · "
