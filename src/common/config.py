@@ -49,10 +49,14 @@ class JointStepLimits:
 
 @dataclass
 class WorkspaceLimits:
-    """Axis-aligned box in the robot base frame, millimetres."""
+    """Robot base frame, millimetres: an axis-aligned box, optionally cut to a horizontal reach
+    radius around the base axis, minus vertical keep-out cylinders (fixed things in the cell)."""
     x: tuple[float, float] = (-600.0, 600.0)
     y: tuple[float, float] = (-600.0, 600.0)
     z: tuple[float, float] = (0.0, 700.0)
+    max_radius_mm: float | None = None      # sqrt(x² + y²) limit; None = box only
+    # [{"name": "D455", "xy": [x, y], "radius_mm": r, "z": [lo, hi]}, ...]
+    keep_out: list = field(default_factory=list)
 
 
 @dataclass
@@ -94,6 +98,7 @@ class GripperConfig:
     # Flange -> fingertip distance along the tool Z axis. Motion commands use Tool 0
     # (the flange), so pick/place heights add this. MEASURE IT before picking.
     tool_length_mm: float = 0.0
+    finger_half_gap_mm: float = 0.0     # open fingertips off the tool axis (along flange Y); 0 = ignore
     transport: str = "direct"           # direct (USB–RS485) | controller
     # true: only ui/app.py opens the bus; every other process (episodes, scripts) sends its gripper
     # calls to the app (drivers.gripper.PGCGripperRemote) — one Modbus master, no clashes
@@ -218,6 +223,7 @@ class PerceptionConfig:
     env_calibration_file: str = "data/memory/hand_eye_env.json"
     send_images_to_model: bool = True
     image_max_width: int = 640
+    calibration: dict = field(default_factory=dict)    # ChArUco board + tape-measured cell (perception.charuco_calibration)
 
     @property
     def calibration_path(self) -> Path:

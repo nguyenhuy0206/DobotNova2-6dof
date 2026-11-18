@@ -21,3 +21,20 @@ env_calibration_file: data/memory/hand_eye_env.json
 
 send_images_to_model: true   # attach the camera image when Astra calls `look`
 image_max_width: 640
+
+# Camera calibration from the ChArUco board (scripts/calibrate_cameras.py, tool calibrate_cameras).
+calibration:
+  board:                       # measured on the print (A4 PDF printed portrait, scaled): NOT the PDF numbers
+    squares: [7, 5]
+    square_mm: 20.85           # 7 squares = 14.6 cm, 5 squares = 10.4 cm
+    marker_mm: 15.0
+    dictionary: DICT_5X5_100
+  measured:                    # only to sanity-check a solve; update when things move
+    # 18 Nov: 443.8 mm from the right edge of the robot base to the right edge of the board (edge to edge,
+    # tape). The check compares base AXIS -> board CENTRE, so it is not entered here; the solve gave
+    # 576.5 = 443.8 + ~75 (base radius) + ~52 (half board) + few mm. Consistent.
+    tolerance_mm: 40
+    # D455 moved on 18 Nov so it sees the board: measure again, then add
+    #   env_cam_to_base_mm (horizontal), env_cam_height_mm (lens above the table), env_cam_to_board_mm
+    wrist_cam_offset_mm: 122   # wrist camera off the tool axis: bracket 57 + 65 to the camera base (camera
+                               # sits ~70 mm above that base), tape 18 Nov (warning only)

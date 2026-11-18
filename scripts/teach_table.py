@@ -17,9 +17,11 @@ the flange above the table by the clearances in config/robot.yaml `table:`.
 """
 from __future__ import annotations
 
+import dataclasses
+
 import _bootstrap  # noqa: F401
 from actions.primitives import create_primitives
-from common.config import WorkspaceLimits, load_robot_config
+from common.config import load_robot_config
 from common.errors import RobotError
 from memory.workcell import load_workcell, save_block_top, save_table_height
 from perception.transforms import pose_to_matrix
@@ -37,7 +39,7 @@ def main() -> None:
     what, key = ("cube top", "block_top_z_mm") if block else ("table height", "table_z_mm")
     cfg = load_robot_config()
     # Teaching needs the tip below the placeholder workspace floor; nothing else changes.
-    cfg.workspace = WorkspaceLimits(cfg.workspace.x, cfg.workspace.y, (-600.0, cfg.workspace.z[1]))
+    cfg.workspace = dataclasses.replace(cfg.workspace, z=(-600.0, cfg.workspace.z[1]))
     p = create_primitives(cfg)
     if not block:
         p.table_z_mm = None                 # no keep-out while we look for the table

@@ -47,7 +47,7 @@ class RobotActions:
 
     # -- dashboard -------------------------------------------------------
     _SYSTEM = {"power_on": "power_on", "enable": "enable", "disable": "disable",
-               "clear": "clear_error", "stop": "stop"}
+               "clear": "clear_error", "stop": "stop", "drag_on": "start_drag", "drag_off": "stop_drag"}
 
     def system(self, action: str) -> str:
         if action not in self._SYSTEM:

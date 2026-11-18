@@ -115,7 +115,7 @@
   }
 
   async function systemCommand(action) {
-    if (action === 'enable' && !isArmed()) { notify('Turn on "Workspace clear" first'); return; }
+    if ((action === 'enable' || action === 'drag_on') && !isArmed()) { notify('Turn on "Workspace clear" first'); return; }
     eventLog(action === 'enable' ? 'WARN' : 'INFO', `${action} robot`);
     try {
       const result = await api('/api/skills/system', { action, confirm: isArmed() });

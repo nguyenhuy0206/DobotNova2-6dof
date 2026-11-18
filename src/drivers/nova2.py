@@ -147,6 +147,13 @@ class Nova2:
     def stop(self) -> str:
         return self.dashboard("ResetRobot()")
 
+    def start_drag(self) -> str:
+        """Hand-guiding (mode 6): the arm can be pushed by hand. Needs the robot enabled and still."""
+        return self.dashboard("StartDrag()")
+
+    def stop_drag(self) -> str:
+        return self.dashboard("StopDrag()")
+
     def speed_factor(self, speed: int) -> str:
         return self.dashboard(f"SpeedFactor({speed})")
 

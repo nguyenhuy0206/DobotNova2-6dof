@@ -177,8 +177,9 @@ def test_explore_tools_registered(p, tmp_path):
     from perception.scene import Scene
 
     cfg = load_explore_config()
-    assert cfg.gripper.close_position == 500 and "auto_calibrate" in cfg.allowed_tools
-    assert "record_calibration_point" not in cfg.allowed_tools            # manual calibration is off
+    assert cfg.gripper.close_position == 500
+    # camera calibration is operator infrastructure (18 Nov), not something Astra calls
+    assert not {"auto_calibrate", "verify_calibration", "record_calibration_point"} & set(cfg.allowed_tools)
     scene = Scene(PerceptionConfig(colors={"red": [[[0, 120, 70], [10, 255, 255]]]}), {})
     cal = SelfCalibration(scene, p, session_file=tmp_path / "session.json")
     agent = AgentConfig(allowed_tools=cfg.allowed_tools)
@@ -189,11 +190,12 @@ def test_explore_tools_registered(p, tmp_path):
                                 extra_specs=_explore_specs(cal, lambda: {"visible": True}, NotesStore(tmp_path / "n"),
                                                            knowledge=KnowledgeStore(tmp_path / "c.json")))
     names = {s.name for s in executor.list()}
-    assert {"auto_calibrate", "verify_calibration", "propose_hypothesis", "check_robot_in_view",
+    assert {"propose_hypothesis", "check_robot_in_view",
             "define_concept", "query_observations", "record_measurement", "read_history"} <= names
     assert not {"record_evidence", "generalize_hypothesis", "read_notes"} & names      # evidence is computed
     assert "write_note" not in names                                  # raw notes are not written any more
     assert "stop" not in names and "set_gripper" not in names          # only a controller alarm stops
+    assert not {"auto_calibrate", "verify_calibration"} & names
     assert "search_object" not in names and lib.all() == []          # no seeds in explore mode
     assert "500" in executor.specs["close_gripper"].description
     assert json.dumps(executor.specs["look"].parameters).count("zoom") == 1

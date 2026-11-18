@@ -33,6 +33,8 @@ Command syntax follows Dobot's TCP-IP-Python-V3 SDK (external/…/dobot_api.py).
 """
 from __future__ import annotations
 
+import dataclasses
+
 import math
 import threading
 import time
@@ -42,7 +44,6 @@ import numpy as np
 
 from actions import validation as v
 from actions.robot_actions import RobotActions
-from common.config import WorkspaceLimits
 from actions import self_collision
 from common.errors import ContactError, RobotError, SafetyError, ValidationError
 from common.log import get_logger
@@ -66,6 +67,9 @@ class PrimitiveSkills:
         self._gripper = None
         self._gripper_lock = threading.Lock()
         self.tool_length_mm = float(actions.config.gripper.tool_length_mm)
+        # open fingertips sit ± this far from the tool axis (along flange Y): when the gripper tilts,
+        # the lower one is what reaches the table first, so the floor is checked on it
+        self.finger_half_gap_mm = float(getattr(actions.config.gripper, "finger_half_gap_mm", 0.0))
         self.speed_cap: int | None = None   # set for the agent (agent.yaml max_speed)
         self.table = actions.config.table
         self.table_z_mm: float | None = None              # data/memory/workcell.json
@@ -148,9 +152,17 @@ class PrimitiveSkills:
     def tip_from_controller(self, pose: list[float]) -> list[float]:
         return self.tip_from_flange(self.flange_from_controller(pose))
 
+    def _lowest_tip(self, centre, R: np.ndarray) -> list[float]:
+        """The lowest point of the fingertips: the centre, or an open fingertip when the gripper tilts."""
+        c = np.asarray(centre[:3], float)
+        if not self.finger_half_gap_mm:
+            return list(map(float, c))
+        side = R[:, 1] * self.finger_half_gap_mm
+        return list(map(float, min((c, c + side, c - side), key=lambda q: q[2])))
+
     def _points(self, p: np.ndarray, R: np.ndarray) -> tuple[list[float], list[float]]:
-        """(fingertip xyz, flange xyz) for a flange position/rotation."""
-        return list(p + R[:, 2] * self.tool_length_mm), list(p)
+        """(lowest fingertip xyz, flange xyz) for a flange position/rotation."""
+        return self._lowest_tip(p + R[:, 2] * self.tool_length_mm, R), list(p)
 
     def _summary(self, fb: Feedback) -> dict:
         flange = self.flange_from_controller(fb["pose"])
@@ -173,10 +185,13 @@ class PrimitiveSkills:
 
     def _check_points(self, tip: list[float], flange: list[float], where: str = "target",
                       use_floor: bool = True) -> None:
-        """Fingertip and flange inside the workspace box and above the table."""
+        """Fingertip and flange inside the workspace and above the table. A 6-value tip pose is
+        checked at its lowest open fingertip."""
+        if len(tip) >= 6:
+            tip = self._lowest_tip(tip, self._rot(tip))
         ws, floors = self.cfg.workspace, (self.floor_limits() if use_floor else None)
         for name, point, zmin in (("fingertip", tip, floors and floors[0]), ("flange", flange, floors and floors[1])):
-            box = ws if zmin is None else WorkspaceLimits(ws.x, ws.y, (zmin, ws.z[1]))
+            box = ws if zmin is None else dataclasses.replace(ws, z=(zmin, ws.z[1]))
             try:
                 v.check_pose_in_workspace(point, box)
             except ValidationError as exc:
@@ -196,7 +211,7 @@ class PrimitiveSkills:
     def _fk_points(self, joints: list[float]) -> tuple[list[float], list[float]]:
         flange = self.robot.positive_solution(joints)
         R = self._rot(flange)
-        return list(np.array(flange[:3]) + R[:, 2] * self.tool_length_mm), flange[:3]
+        return self._lowest_tip(np.array(flange[:3]) + R[:, 2] * self.tool_length_mm, R), flange[:3]
 
     def _check_joint_path(self, start: list[float], end: list[float]) -> None:
         """Joint-interpolated motion: FK every ~path_step_deg; only needed near a table."""

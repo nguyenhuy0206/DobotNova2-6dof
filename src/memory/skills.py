@@ -40,6 +40,7 @@ class Skill:
     success_conditions: list[dict] = field(default_factory=list)  # checks after the last step
     failure_conditions: dict = field(default_factory=dict)        # failure code -> what it means / next try
     recovery: list[dict] = field(default_factory=list)            # safe steps after a definite failure
+    calibration: str = ""   # coordinate definition the numbers use (memory.knowledge.CALIBRATION); "" = current
     validation_status: str = "candidate"   # candidate (needs a supervised run) | validated | deprecated
     evidence: list[dict] = field(default_factory=list)            # {t, ok, supervised, failure, episode}
 

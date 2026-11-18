@@ -15,12 +15,20 @@ joint_step:              # relative jog, degrees
   min_deg: 0.1
   max_deg: 20.0
 
-# Cartesian safety box in robot base frame (mm). PLACEHOLDER values —
-# measure your cell (table height, walls, camera mount) before relying on it.
+# Cartesian limits in the robot base frame (mm), checked for the fingertip AND the flange on every
+# move. Surveyed 18 Nov 2026 by hand-guided touches (data/memory/workcell_survey.json):
+#   reach along the table edge 707–717 mm (fingertip, gripper tilted) -> radius 690 (20 mm margin)
+#   highest pose the operator allows (zmax): flange z 528 -> z max 530 (home: 524)
+# The table floor comes from data/memory/workcell.json (table_z_mm), not from z[0].
 workspace:
-  x: [-600, 600]
-  y: [-600, 600]
-  z: [0, 700]
+  x: [-720, 720]
+  y: [-720, 720]
+  z: [0, 530]
+  max_radius_mm: 690
+  keep_out:             # vertical cylinders the fingertip and flange must not enter
+    # D455 after the 18 Nov move: touches front/back/side (camera455_*), every contact candidate
+    # (gripper centre or either open fingertip) within 96 mm of (-5, -632), z 114–154 -> +40 mm margin
+    - {name: D455, xy: [-5, -632], radius_mm: 135, z: [0, 220]}
 
 motion:                  # primitive skills (src/actions/primitives.py)
   joint_limits_deg: [360, 180, 156, 360, 360, 360]
@@ -33,7 +41,9 @@ motion:                  # primitive skills (src/actions/primitives.py)
   home_joints: [0, 0, 90, 0, 90, 0]   # PLACEHOLDER — teach a real 'home' with save_position
 
 gripper:                 # DH-Robotics PGC over RS485 (Modbus RTU)
-  tool_length_mm: 118    # flange -> fingertip (mm), measured 11.8 cm; pick/place skills add it
+  tool_length_mm: 127.1  # flange -> centre between the fingertips (mm), from touches 18 Nov 2026
+                         #   (fit residual ~1 mm; was 118 from a tape measure)
+  finger_half_gap_mm: 31.6   # open fingertips off the axis (flange Y): the table floor is checked on the lower one
   transport: direct      # direct = USB–RS485 adapter on this Mac; controller = via Nova 2
   via_ui: true           # only ui/app.py opens the bus; episodes/scripts go through it (one Modbus master)
   port: null             # null = auto-detect /dev/cu.usbserial-*

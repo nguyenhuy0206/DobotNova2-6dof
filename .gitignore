@@ -12,6 +12,7 @@ data/captures/*
 data/logs/*
 data/episodes/*
 data/memory/*
+data/calibration/*
 !data/**/.gitkeep
 
 .DS_Store

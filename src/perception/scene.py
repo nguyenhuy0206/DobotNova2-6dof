@@ -155,6 +155,9 @@ class Scene:
         if self.workspace is None:
             return True
         bounds = (self.workspace.x, self.workspace.y, self.workspace.z)
+        r_max = getattr(self.workspace, "max_radius_mm", None)
+        if r_max is not None and (xyz_mm[0] ** 2 + xyz_mm[1] ** 2) ** 0.5 > r_max + margin_mm:
+            return False
         return all(lo - margin_mm <= c <= hi + margin_mm for c, (lo, hi) in zip(xyz_mm, bounds))
 
     def look(self, camera: str = "env", colors: list[str] | None = None,

@@ -211,6 +211,11 @@ def _detections(cam: str, objects: list, params: dict, out: dict, tip: tuple | N
                 out[f"{p}.{axis}"] = _round(float(x))
 
 
+# Coordinate definition the recorded numbers use. 18 Nov 2026: fingertip = flange + 127.1 mm (centre
+# between the fingertips, from touches), table z 0.3. Records made before carry "tool118_table42".
+CALIBRATION = "tool127_table0"
+OLD_CALIBRATION_SINCE = "2026-11-18 16:15:00"     # episodes before this used tool 118 mm / table 41.96
+
 class Observations:
     def __init__(self, path: Path = OBSERVATIONS_FILE):
         self.path = path
@@ -222,6 +227,7 @@ class Observations:
             t: str | None = None) -> dict:
         t = t or time.strftime("%Y-%m-%d %H:%M:%S")
         vars_ = {**vars_, "day": vars_.get("day") or t[:10]}      # the setup changes from day to day
+        vars_.setdefault("calib", CALIBRATION)                     # which tool/table definition the numbers use
         obs = {"id": f"O{len(self.items) + 1}", "n": len(self.items) + 1, "t": t,
                "episode": episode, "source": source, "vars": vars_}
         if note:

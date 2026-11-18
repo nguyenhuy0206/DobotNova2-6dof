@@ -70,9 +70,8 @@ allowed_tools:
   - look
   - find_objects
   - check_robot_in_view
-  # self-calibration of the env camera
-  - auto_calibrate          # scripts/run_calibration.sh as a tool (tilted poses; the manual record/solve
-  - verify_calibration      # tools are off: on 17 Nov they gave a calibration with no tilt, cubes 45 mm low)
+  # Camera calibration is operator infrastructure (18 Nov), not an Astra tool: it does not help
+  # self-improvement. Operator: scripts/calibrate_cameras.py, scripts/run_calibration.sh.
   # learning
   - list_skills
   - run_skill

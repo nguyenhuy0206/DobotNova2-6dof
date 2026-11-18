@@ -1,4 +1,5 @@
 # astra-version: 2 — Fix v1: z_top+95 could be below Z=162, causing a long lateral approach-zone move; enforce lateral hover at Z>=190.
+# OLD CALIBRATION (before 2026-11-18): fingertip = flange + 118 mm, table z 41.96. Now: fingertip = flange + 127.1 mm (centre between the fingertips), table z 0.3.
 """Approach a cube without making a long lateral move below the approach-zone boundary."""
 KIND = "routine"
 

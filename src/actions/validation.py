@@ -33,6 +33,16 @@ def check_pose_in_workspace(pose: list[float], ws: WorkspaceLimits) -> None:
     for axis, value, (lo, hi) in zip("XYZ", pose[:3], (ws.x, ws.y, ws.z)):
         if not lo <= value <= hi:
             raise ValidationError(f"{axis}={value:.1f} mm nằm ngoài workspace [{lo}, {hi}].")
+    x, y, z = (float(c) for c in pose[:3])
+    r = (x * x + y * y) ** 0.5
+    if ws.max_radius_mm is not None and r > ws.max_radius_mm:
+        raise ValidationError(f"{r:.0f} mm from the base axis: outside the reach limit {ws.max_radius_mm:g} mm.")
+    for k in ws.keep_out or []:
+        (kx, ky), zlo, zhi = k["xy"], *k.get("z", (-1e9, 1e9))
+        d = ((x - kx) ** 2 + (y - ky) ** 2) ** 0.5
+        if d < k["radius_mm"] and zlo <= z <= zhi:
+            raise ValidationError(f"inside the keep-out zone around {k.get('name', 'an obstacle')} "
+                                  f"({d:.0f} mm from it, keep ≥ {k['radius_mm']:g} mm).")
 
 
 def check_pose6(pose: list) -> list[float]:

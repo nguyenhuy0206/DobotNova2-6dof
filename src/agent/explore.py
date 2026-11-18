@@ -117,7 +117,11 @@ Hard limits enforced by the tools (an error tells you which one hit):
 Coordinates: all poses are FINGERTIP positions in the robot base frame (mm, deg). rx=180, ry=0 points the
 gripper straight down; rz turns it about the vertical axis. move_relative frame="tool" moves in the
 gripper's own frame. Camera coordinates (look / find_objects base_xyz_mm) come from the env-camera
-calibration (auto_calibrate makes one by itself; verify_calibration checks the active one).
+calibration, which the operator maintains.
+Calibration changed on 18 Nov 2026: the fingertip point is now the centre between the fingertips,
+127.1 mm from the flange (before: 118 mm), and the table top is at z 0.3 (before: 41.96). Observations
+(variable calib), episode history, skills and routines made before carry the old definition
+(calib=tool118_table42); new ones carry calib=tool127_table0.
 Wrist image: the camera sits on the gripper; the gripper body is at the bottom of the image and the two
 fingers are on the left and right, closing left<->right.
 
@@ -413,7 +417,9 @@ def history_spec(notes: NotesStore) -> ActionSpec:
         limit = max(1, min(int(limit), 60))
         q = str(query or "").lower()
         if kind == "episodes":
-            rows = [{k: h.get(k) for k in ("episode", "at", "success", "blocks_moved", "summary")}
+            from memory.knowledge import CALIBRATION, OLD_CALIBRATION_SINCE
+            rows = [{**{k: h.get(k) for k in ("episode", "at", "success", "blocks_moved", "summary")},
+                     "calib": "tool118_table42" if str(h.get("at") or "") < OLD_CALIBRATION_SINCE else CALIBRATION}
                     for h in history(last=10000) if not q or q in json.dumps(h).lower()]
             return {"episodes": rows[-limit:], "total": len(rows)}
         if kind == "old_hypotheses":

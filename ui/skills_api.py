@@ -45,6 +45,8 @@ class SkillsAPI:
         action = str(data.get("action", ""))
         if action in ("enable", "power_on"):
             require_confirm(data.get("confirm"), "Bật 'Workspace clear' trước khi Enable (nhả phanh).")
+        if action == "drag_on":
+            require_confirm(data.get("confirm"), "Bật 'Workspace clear' trước khi Drag (tay đỡ robot).")
         return {"ok": True, "action": action, "result": self.primitives.a.system(action)}
 
     def run(self, data: dict) -> dict:

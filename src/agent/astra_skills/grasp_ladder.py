@@ -1,4 +1,5 @@
 # astra-version: 2 — Remove unsupported claim that any descent error proves fingers landed on cube/box; distinguish commanded depth from achieved depth. Motion parameters 
+# OLD CALIBRATION (before 2026-11-18): fingertip = flange + 118 mm, table z 41.96. Now: fingertip = flange + 127.1 mm (centre between the fingertips), table z 0.3.
 """Grasp ladder; report descent failures without inferring an unobserved collision cause."""
 KIND = "routine"
 def run(ctx, memo, z_top, first_depth_mm=6, step_mm=6, rungs=3, max_position=850, force=30, speed=1):
