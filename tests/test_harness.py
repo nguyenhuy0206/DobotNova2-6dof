@@ -67,8 +67,8 @@ def test_failure_must_be_diagnosed_before_retry(tmp_path):
     """run_skill fails -> a blind retry is refused -> diagnose + test -> conclude -> retry runs."""
     from actions.executor import ActionSpec
     from actions.registry import _obj
-    from agent.diagnosis import Investigation
-    from agent.diagnosis import specs as diagnosis_specs
+    from agent.explore.diagnosis import Investigation
+    from agent.explore.diagnosis import specs as diagnosis_specs
     from agent.harness import HarnessOptions
     runs = []
 
@@ -125,13 +125,13 @@ def test_failure_must_be_diagnosed_before_retry(tmp_path):
 def test_investigation_validates_hypotheses(tmp_path):
     import pytest
 
-    from agent.diagnosis import Investigation
+    from agent.explore.diagnosis import Investigation
     from common.errors import ValidationError
 
     inv = Investigation()
     with pytest.raises(ValidationError, match="no failure"):
         inv.diagnose("something went wrong here", [{"cause": "a", "test": "b", "expect": "c"}])
-    inv.after("verify_calibration", {}, {"ok": True, "result": {"calibration_valid": False, "advice": "moved"}})
+    inv.after("move_to_pose", {}, {"ok": False, "error": "camera and robot disagree by 245 mm"})
     with pytest.raises(ValidationError, match="test"):
         inv.diagnose("camera disagrees by 245 mm", [{"cause": "camera moved"}])
     out = inv.diagnose("camera disagrees by 245 mm", [{"cause": "camera moved", "test": "recalibrate + verify",
@@ -144,7 +144,7 @@ def test_investigation_validates_hypotheses(tmp_path):
 
 
 def test_default_gate_lets_one_failure_retry_and_stops_repeats():
-    from agent.diagnosis import Investigation
+    from agent.explore.diagnosis import Investigation
     inv = Investigation()                                   # gate_after_repeats = 2
     fail = {"ok": True, "result": {"ok": False, "failure": "grasp_missed"}}
     pick = {"name": "pick_block_wrist"}
@@ -198,7 +198,7 @@ def test_a_gripper_call_that_changes_nothing_does_not_hold_back_the_move():
 
 
 def test_failure_ids_are_accepted_as_state_shows_them():
-    from agent.diagnosis import Investigation
+    from agent.explore.diagnosis import Investigation
 
     inv = Investigation()
     inv.after("go_to_position", {"name": "home"}, {"ok": False, "error": "no FK"})

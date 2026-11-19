@@ -322,7 +322,7 @@ def test_wrist_centring_gives_up_when_mapping_is_wrong():
 
 
 def test_builtin_pick_place_skills_validate_in_dry_run(prims, tmp_path):
-    from agent.pick_place_skills import ensure_pick_place_skills
+    from agent.explore.pick_place_skills import ensure_pick_place_skills
     lib = SkillLibrary(tmp_path / "s.json")
     assert ensure_pick_place_skills(lib) == ["pick_block_wrist", "place_block_on_table"]
     assert ensure_pick_place_skills(lib) == []              # never overwrites
@@ -370,7 +370,7 @@ def test_options_from_explore_yaml_dict():
 def test_builtin_skill_upgrades_but_astra_versions_are_kept(tmp_path):
     import copy
 
-    from agent.pick_place_skills import PICK, ensure_pick_place_skills
+    from agent.explore.pick_place_skills import PICK, ensure_pick_place_skills
     lib = SkillLibrary(tmp_path / "s.json")
     old = copy.deepcopy(PICK)
     old.recovery = [{"tool": "open_gripper"}]
@@ -383,7 +383,7 @@ def test_builtin_skill_upgrades_but_astra_versions_are_kept(tmp_path):
 
 
 def test_pick_has_no_measurement_lock_or_probe():
-    from agent.pick_place_skills import BUILTIN, PICK
+    from agent.explore.pick_place_skills import BUILTIN, PICK
     assert [s.name for s in BUILTIN] == ["pick_block_wrist", "place_block_on_table"]
     assert PICK.steps[0]["routine"] == "approach"
     routines = [s.get("routine") for s in PICK.steps]
@@ -571,7 +571,7 @@ def test_lift_detours_towards_the_base_when_out_of_reach():
 
 
 def test_autonomous_runner_runs_candidates_and_promotes(prims, tmp_path):
-    from agent.pick_place_skills import ensure_pick_place_skills
+    from agent.explore.pick_place_skills import ensure_pick_place_skills
     lib = SkillLibrary(tmp_path / "s.json")
     ensure_pick_place_skills(lib)
     r = SkillRunner(lib, constants={"table_z": 42.0}, require_validation=False)

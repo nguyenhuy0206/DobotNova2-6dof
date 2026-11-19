@@ -5,7 +5,7 @@
          with a knowledge store each hypothesis IS a knowledge hypothesis (concept + mechanism +
          prediction when -> expect, or the id of an existing one), so the code checks it against
          every recorded observation, past and future; without one: {cause, test, expect} text
-      -> Astra runs the tests (look, verify_calibration, a small move, a changed param …)
+      -> Astra runs the tests (look, a small move, a changed param …)
       -> conclude(H1, observed, verdict, fix)      confirmed / rejected / inconclusive
 
 Rules enforced here (not only asked for in the prompt):
@@ -28,7 +28,7 @@ from common.errors import ValidationError
 
 # actions whose failure needs an explanation (read-only looks and memory tools do not)
 WATCHED = {"run_skill", "run_routine", "move_to_pose", "move_relative", "move_to_joints", "jog_joint",
-           "go_to_position", "close_gripper", "solve_calibration", "verify_calibration"}
+           "go_to_position", "close_gripper"}
 GATED = {"run_skill", "save_skill"}
 VERDICTS = ("confirmed", "rejected", "inconclusive")
 # refusals that are a known state, not a failure to investigate (the result says what to do)
@@ -73,11 +73,11 @@ class Investigation:
         missed = name == "close_gripper" and result.get("ok") and res.get("holding") is False
         dropped = res.get("failure") == "gripper_reported_drop"   # set by the harness (held before, dropped after)
         failed = (not result.get("ok")) or (name == "run_skill" and res.get("ok") is False) \
-            or (name == "verify_calibration" and res.get("calibration_valid") is False) or missed or dropped
+            or missed or dropped
         if not failed:
             return None
         code = "grasp_missed" if missed else (
-            res.get("failure") or ("calibration_invalid" if name == "verify_calibration" else "error"))
+            res.get("failure") or "error")
         if code in NOT_FAILURES:
             return None
         detail = res.get("detail") or result.get("error") or res.get("advice") or (
@@ -253,7 +253,7 @@ def specs(inv: Investigation):
                                                 "expect": {"type": "string"}},
                "required": ["cause", "test", "expect"]}
         doc = ("After a failure (result shows failure_id): say WHY it failed from the evidence and give 1–3 "
-               "hypotheses about the cause, each with a cheap TEST you will run (look, verify_calibration, a "
+               "hypotheses about the cause, each with a cheap TEST you will run (look, a "
                "small move, one changed parameter …) and what you EXPECT to see if it is true. Required only "
                "when the same failure repeats; may be sent in the same turn as the first test.")
     return [

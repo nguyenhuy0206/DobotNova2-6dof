@@ -111,7 +111,7 @@ class AgentHarness:
         self.options = options or HarnessOptions()
         self.state_fn = state_fn        # () -> compact measured state for the bounded context
         self.skill_runner = skill_runner
-        self.investigation = investigation   # agent.diagnosis.Investigation: failures -> hypotheses -> tests
+        self.investigation = investigation   # agent.explore.diagnosis.Investigation: failures -> hypotheses -> tests
         self.last_episode: str | None = None
         self.last_metrics: dict | None = None
         self.last_turn: dict = {}

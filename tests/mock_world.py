@@ -203,7 +203,7 @@ def build(variant: str, tmp, plan=None, object_at: int | None = 776):
     ex = ActionExecutor(build_registry(prims, scene, runner), mode="live")
     runner.executor = ex
     from actions.local_steps import LocalSteps
-    from agent.pick_place_skills import ensure_pick_place_skills
+    from agent.explore.pick_place_skills import ensure_pick_place_skills
     class SimTouch(LocalSteps):
         """The sim has no force feedback: touching = the nearest cube's top, as a real contact would report."""
         def routine_probe_top(self, memo, z_est, **kw):

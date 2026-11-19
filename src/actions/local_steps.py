@@ -93,8 +93,8 @@ class LocalSteps:
         table = getattr(self.p, "table_z_mm", None) if self.p is not None else None
         if table is not None and float(z_top) < table + min_above_table_mm:
             return {"ok": False, "detail": f"z_top={float(z_top):.1f} is not above the table ({table:.1f} + "
-                    f"{min_above_table_mm:.0f} mm): the env-camera heights are wrong — verify_calibration (and "
-                    "recalibrate if it fails) or use a measured contact height"}
+                    f"{min_above_table_mm:.0f} mm): that env-camera height cannot be a top — use a measured "
+                    "contact height"}
         if self.block_top_z is None:
             return {"ok": True, "detail": "no taught cube top to compare with"}
         diff = float(z_top) - self.block_top_z

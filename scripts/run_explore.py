@@ -50,7 +50,7 @@ def main() -> None:
     s = build_explore(confirm=ask_operator, mode=args.mode, variant=args.variant)
     p, a = s.kit.primitives, s.harness.config
     if args.review_all:
-        from agent.learning import review_all
+        from agent.explore.learning import review_all
         out = review_all(s)
         print(f"Reviewed {len(out['episodes'])} episodes with {out['images']} wrist images\n\n{out['review']}")
         print_skills(s)

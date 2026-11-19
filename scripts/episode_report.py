@@ -14,7 +14,7 @@ import argparse
 from collections import Counter
 
 import _bootstrap  # noqa: F401
-from agent.learning import history
+from agent.explore.learning import history
 from memory.store import EpisodeStore
 
 COLUMNS = ["episode", "variant", "outcome", "moved", "calls", "tokens", "cached", "max_ctx", "images",

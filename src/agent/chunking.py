@@ -17,8 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-BOUNDARY = {"close_gripper", "open_gripper", "set_gripper", "run_skill", "stop",
-            "solve_calibration", "reset_calibration", "record_calibration_point"}
+BOUNDARY = {"close_gripper", "open_gripper", "set_gripper", "run_skill", "stop"}
 MOTION = {"move_to_pose", "move_to_joints", "move_relative", "jog_joint", "go_to_position",
           "search_object"} | BOUNDARY
 

@@ -7,7 +7,7 @@ episode: repeating it unchanged cannot give a new result. Seen on 17 Nov: diagno
 same wrong id 6×, open_gripper on open fingers again and again. A move that changes the pose
 each time is progress, not a repeat (lifting in 25 mm steps: move_relative dz +25 three times).
 
-Calls that only observe (look, get_state, list_*, query_observations, verify_calibration …)
+Calls that only observe (look, get_state, list_*, query_observations …)
 neither count nor break a run: looking again changes nothing in the world.
 """
 from __future__ import annotations
@@ -15,8 +15,7 @@ from __future__ import annotations
 import json
 
 OBSERVE_ONLY = {"get_state", "look", "find_objects", "list_skills", "list_routines", "read_routine",
-                "list_concepts", "query_observations", "read_history", "check_robot_in_view",
-                "verify_calibration"}
+                "list_concepts", "query_observations", "read_history", "check_robot_in_view"}
 
 
 def _round(v):

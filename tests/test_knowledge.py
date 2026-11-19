@@ -162,7 +162,7 @@ def test_this_episode_means_the_reviewed_one_during_a_review(tmp_path):
 
 
 def test_diagnose_hypotheses_are_knowledge_hypotheses(tmp_path):
-    from agent.diagnosis import Investigation
+    from agent.explore.diagnosis import Investigation
 
     k = store(tmp_path)
     for v in (140, 140):
@@ -191,7 +191,7 @@ def test_diagnose_hypotheses_are_knowledge_hypotheses(tmp_path):
 def test_episode_prompt_carries_the_knowledge_record(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from agent import learning
+    from agent.explore import learning
     from agent.explore import ExploreSession
 
     k = store(tmp_path)
@@ -201,7 +201,7 @@ def test_episode_prompt_carries_the_knowledge_record(tmp_path, monkeypatch):
     seen = {}
     harness = SimpleNamespace(run=lambda p: seen.setdefault("prompt", p) and "report", last_episode="e",
                               last_metrics={})
-    s = ExploreSession(None, None, None, harness, None, None, None, None, k)
+    s = ExploreSession(None, None, None, harness, None, None, None, k)
     s.run_episode("move the cubes", reflect=False)
     assert "Knowledge record: 1 recorded observations from 1 episodes (query_observations), 1 concepts, " \
            "0 hypotheses." in seen["prompt"]

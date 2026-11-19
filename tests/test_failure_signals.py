@@ -4,7 +4,7 @@ import base64
 
 import numpy as np
 
-from agent.diagnosis import Investigation
+from agent.explore.diagnosis import Investigation
 from memory.knowledge import observe_call
 from perception.detection import detect_colored_objects
 
@@ -41,7 +41,7 @@ def test_a_missed_grasp_is_a_failure_for_diagnosis_and_observations():
 
 
 def test_review_sees_the_wrist_images_before_and_after_a_missed_grasp(tmp_path):
-    from agent.learning import failure_images
+    from agent.explore.learning import failure_images
     from memory.store import EpisodeStore
 
     def jpg(name):
@@ -72,7 +72,7 @@ def test_post_lift_wrist_image_is_recorded_but_not_shown_live(tmp_path):
     from actions.executor import ActionExecutor, ActionSpec
     from actions.registry import _obj
     from agent.harness import AgentHarness, HarnessOptions
-    from agent.learning import post_lift_images
+    from agent.explore.learning import post_lift_images
     from common.config import AgentConfig
     from memory.skills import SkillLibrary
     from memory.store import EpisodeStore

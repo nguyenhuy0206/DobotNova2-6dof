@@ -6,7 +6,6 @@
 
     RobotViewGuard     "is the robot still in the D455 picture?"  -> used after every
                        move in explore mode; the move is undone when it says no
-    (the legacy marker calibration that also used this tape: calibration.marker)
 """
 from __future__ import annotations
 

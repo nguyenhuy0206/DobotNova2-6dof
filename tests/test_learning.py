@@ -5,12 +5,12 @@ from types import SimpleNamespace as NS
 from actions import ActionExecutor, build_registry
 from actions.skill_runner import SkillRunner
 from agent.harness import AgentHarness
-from agent.learning import OutcomeRecorder, history, reflect_executor, summarize_episode
+from agent.explore.learning import OutcomeRecorder, history, reflect_executor, summarize_episode
 from common.config import AgentConfig
 from memory.notes import NotesStore
 from memory.skills import Skill, SkillLibrary
 from memory.store import EpisodeStore
-from agent.explore import _explore_specs
+from agent.explore import explore_specs
 
 
 class FakeClient:
@@ -49,8 +49,7 @@ def test_episode_review_records_outcome_and_updates_skill(prims, sim, tmp_path):
     know = KnowledgeStore(tmp_path / "concepts.json")
     know.records = lambda name: name in ("move_relative", "run_skill")     # what the harness records
     runner = SkillRunner(lib)
-    cal = NS(record=lambda: {}, solve=lambda: {}, reset=lambda: {}, verify=lambda: {})
-    main = ActionExecutor(build_registry(prims, runner=runner) + _explore_specs(cal, None, notes, knowledge=know), mode="live")
+    main = ActionExecutor(build_registry(prims, runner=runner) + explore_specs(None, notes, knowledge=know), mode="live")
     runner.executor = main
 
     # 1) an episode with the robot

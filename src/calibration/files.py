@@ -5,7 +5,6 @@
     data/memory/calibration_charuco.json the last accepted ChArUco calibration, everything about it
     data/memory/workcell.json            table height (and cube-top height) the motion guards use
     data/memory/workcell_survey.json     hand-guided touch survey: gripper contact model, points
-    data/memory/calibration_session.json legacy red-marker points (calibration.marker)
     data/calibration/<stamp>/            each ChArUco run: images, views.json, report.json
 A file that gets replaced is kept next to it as <name>.<stamp>.old.json.
 """
@@ -18,7 +17,6 @@ CALIBRATION_FILE = MEMORY_DIR / "calibration_charuco.json"
 WRIST_FILE = MEMORY_DIR / "hand_eye_wrist.json"
 WORKCELL_FILE = MEMORY_DIR / "workcell.json"
 SURVEY_FILE = MEMORY_DIR / "workcell_survey.json"
-MARKER_SESSION_FILE = MEMORY_DIR / "calibration_session.json"
 
 
 def backup(path, stamp: str) -> None:
