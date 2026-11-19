@@ -120,7 +120,9 @@ def perception_specs(scene) -> list[ActionSpec]:
                    "Take a picture with a camera and detect coloured objects. Returns every object with "
                    "pixel position, bbox, angle_deg (edge angle in the image, 0–90; only when measurable — absent "
                    "for small blobs and for blobs cut by the image border, which carry cut_by_edge) and, for the "
-                   "env camera when calibrated, base_xyz_mm (robot coordinates of its top surface). The annotated image is attached when it adds information "
+                   "env camera when calibrated, base_xyz_mm: robot coordinates of the point at the blob centre, on the "
+                   "surface the env camera sees there (from depth) — the top, or a side face when the camera looks "
+                   "from the side, so z can be below the object's top. The annotated image is attached when it adds information "
                    "(first view, unexpected event, ambiguous detection) — image='always' to force it, "
                    "'never' for data only.",
                    scene.look, _obj({"camera": camera, "colors": {"type": "array", "items": colors},
@@ -131,8 +133,8 @@ def perception_specs(scene) -> list[ActionSpec]:
                                     []),
                    read_only=True),
         ActionSpec("find_objects",
-                   "Detect objects of one colour (largest first). Env camera: base_xyz_mm = position in the robot "
-                   "base frame (when calibrated). If nothing is visible it returns last_seen (where it was, "
+                   "Detect objects of one colour (largest first). Env camera: base_xyz_mm = robot base frame position "
+                   "of the point at the blob centre, on the surface the camera sees there (when calibrated; see look). If nothing is visible it returns last_seen (where it was, "
                    "seconds ago).",
                    scene.find_report,
                    _obj({"color": colors, "camera": camera}, ["color"]), read_only=True),

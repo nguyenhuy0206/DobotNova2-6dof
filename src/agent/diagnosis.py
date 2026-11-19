@@ -27,8 +27,8 @@ import re
 from common.errors import ValidationError
 
 # actions whose failure needs an explanation (read-only looks and memory tools do not)
-WATCHED = {"run_skill", "move_to_pose", "move_relative", "move_to_joints", "jog_joint", "go_to_position",
-           "close_gripper", "solve_calibration", "verify_calibration"}
+WATCHED = {"run_skill", "run_routine", "move_to_pose", "move_relative", "move_to_joints", "jog_joint",
+           "go_to_position", "close_gripper", "solve_calibration", "verify_calibration"}
 GATED = {"run_skill", "save_skill"}
 VERDICTS = ("confirmed", "rejected", "inconclusive")
 # refusals that are a known state, not a failure to investigate (the result says what to do)
@@ -71,8 +71,9 @@ class Investigation:
             return None
         res = result.get("result") if isinstance(result.get("result"), dict) else {}
         missed = name == "close_gripper" and result.get("ok") and res.get("holding") is False
+        dropped = res.get("failure") == "gripper_reported_drop"   # set by the harness (held before, dropped after)
         failed = (not result.get("ok")) or (name == "run_skill" and res.get("ok") is False) \
-            or (name == "verify_calibration" and res.get("calibration_valid") is False) or missed
+            or (name == "verify_calibration" and res.get("calibration_valid") is False) or missed or dropped
         if not failed:
             return None
         code = "grasp_missed" if missed else (

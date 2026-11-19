@@ -124,3 +124,27 @@ def test_post_lift_wrist_image_is_recorded_but_not_shown_live(tmp_path):
     shots = post_lift_images(episodes, h.last_episode)
     assert len(shots) == 1 and "after lifting 50.0 mm, gripper position 657" in shots[0][0]
     assert not any("post-lift" in i or "image_url" in i for i in client.inputs)      # never in the live context
+
+
+def test_a_drop_during_a_move_is_a_failure_for_diagnosis_and_observations():
+    """18 Nov: lift_to returned ok three times while the cube stayed on the box; diagnose refused."""
+    from types import SimpleNamespace
+
+    from agent.harness import AgentHarness
+    fake = SimpleNamespace(_state=lambda: {"gripper": {"grip_status": "object dropped", "position": 500}})
+    fake._grip_status = lambda: AgentHarness._grip_status(fake)
+    result = {"ok": True, "action": "run_routine", "result": {"ok": True, "z": 160.0, "moves": 5}}
+    AgentHarness._mark_drop(fake, result)
+    assert result["result"]["failure"] == "gripper_reported_drop" and result["result"]["ok"] is False
+
+    inv = Investigation(gate_after_repeats=2)
+    f = inv.after("run_routine", {"name": "lift_to", "args": {"z": 160}}, result)
+    assert f["failure_id"] == "F1" and inv.failures[0]["code"] == "gripper_reported_drop"
+    v = observe_call("run_routine", {"name": "lift_to", "args": {"z": 160}}, result)
+    assert v["ok"] is False and v["failure"] == "gripper_reported_drop"
+
+    # still holding after the move: nothing is marked
+    held = {"ok": True, "result": {"ok": True}}
+    fake._state = lambda: {"gripper": {"grip_status": "object caught", "position": 640}}
+    AgentHarness._mark_drop(fake, held)
+    assert "failure" not in held["result"]

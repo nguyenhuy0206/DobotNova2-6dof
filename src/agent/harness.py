@@ -156,6 +156,30 @@ class AgentHarness:
         spec = self.executor.specs.get(name)
         return spec is not None and (spec.moves_robot or spec.delegates)
 
+    def _grip_status(self) -> str:
+        st = self._state() or {}
+        return str((st.get("gripper") or {}).get("grip_status") or "")
+
+    def _holding(self) -> bool:
+        return "caught" in self._grip_status()
+
+    def _mark_drop(self, result: dict) -> None:
+        """The gripper held an object before this call and reports it dropped after: a failure
+        signal (gripper_reported_drop), even when the motion itself arrived (18 Nov: lift_to ok=true
+        three times while the cube stayed behind, and diagnose had no failure to work on). It is the
+        gripper's own report, not proof: once on 18 Nov it came while the cube was still carried."""
+        st = (self._state() or {}).get("gripper") or {}
+        if "dropped" not in str(st.get("grip_status") or ""):
+            return
+        inner = result.get("result")
+        if not isinstance(inner, dict):
+            inner = result["result"] = {}
+        inner["ok"] = False
+        inner["failure"] = "gripper_reported_drop"
+        note = (f"the gripper held an object before this call and now reports 'object dropped' (fingers at "
+                f"position {st.get('position')}); this is the gripper's own report — a camera can confirm it")
+        inner["detail"] = f"{inner['detail']} — {note}" if inner.get("detail") else note
+
     def _post_lift_image(self, episode: str, step: int, held: dict) -> None:
         """Once per grasp, when the gripper holds something and has been lifted ≥ 30 mm since it
         caught it: a wrist image of how the object sits in the fingers. For the log, the
@@ -298,7 +322,10 @@ class AgentHarness:
                     if refusal:
                         result = {"ok": False, "action": call.name, "executed": False, "error": refusal}
                     else:
+                        holding = self._moves(call.name) and call.name != "open_gripper" and self._holding()
                         result = self.executor.execute(call.name, call.parsed_args)
+                        if holding:
+                            self._mark_drop(result)
                         diag = inv.after(call.name, call.parsed_args, result) if inv is not None else None
                         if diag:
                             result["diagnosis"] = diag
