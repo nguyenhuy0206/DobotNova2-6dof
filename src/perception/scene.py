@@ -8,7 +8,7 @@ Frame sources (no camera is opened here, so it never fights the UI for a device)
   * env   -> D455 depth helper (colour + aligned depth + intrinsics)   scripts/run_ui.sh --depth
   * other -> latest JPEG from the running UI (colour only)             /api/cameras/<name>/frame.jpg
 
-3D needs depth (env) and a calibration (scripts/calibrate_env_camera.py);
+3D needs depth (env) and a calibration (scripts/calibrate.sh cameras);
 without them objects are still reported in pixels.
 """
 from __future__ import annotations

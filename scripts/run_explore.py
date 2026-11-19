@@ -2,7 +2,6 @@
 """Astra explores the cell and learns to pick the blocks (config/explore.yaml).
 
     scripts/run_explore.sh                     run the task from explore.yaml (live, ≤10 % speed)
-    scripts/run_explore.sh --recalibrate       camera was moved: forget the env calibration first
     scripts/run_explore.sh --mode confirm      ask y/N before every motion
     scripts/run_explore.sh "custom task text"
     scripts/run_explore.sh --episodes 5        5 attempts; after each Astra reviews it and updates skills/notes
@@ -33,7 +32,6 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("task", nargs="?", help="override the task in config/explore.yaml")
     ap.add_argument("--mode", choices=["dry_run", "confirm", "live"])
-    ap.add_argument("--recalibrate", action="store_true", help="camera moved: drop the env calibration")
     ap.add_argument("--yes", action="store_true", help="don't wait for Enter before starting")
     ap.add_argument("--episodes", type=int, help="attempts in a row (default: explore.yaml episodes)")
     ap.add_argument("--no-reflect", action="store_true", help="skip the self-review after each episode")
@@ -49,7 +47,7 @@ def main() -> None:
     if args.promote or args.rollback or args.skills:
         skill_admin(args)
         return
-    s = build_explore(confirm=ask_operator, mode=args.mode, recalibrate=args.recalibrate, variant=args.variant)
+    s = build_explore(confirm=ask_operator, mode=args.mode, variant=args.variant)
     p, a = s.kit.primitives, s.harness.config
     if args.review_all:
         from agent.learning import review_all

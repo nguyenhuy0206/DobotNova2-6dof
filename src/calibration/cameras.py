@@ -24,14 +24,13 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from calibration.board import BoardSpec, Detection, board_pose, calibrate_intrinsics, detect
+from calibration.files import CALIBRATION_FILE, SESSIONS_DIR, WRIST_FILE, backup
+from calibration.geometry import average_poses, inv
+from calibration.hand_eye import HandEyeResult, depth_check_mm, env_from_board, hand_eye
 from common.errors import RobotError, SafetyError, ValidationError
-from common.paths import DATA_DIR, MEMORY_DIR
-from perception import charuco as ch
 from perception.transforms import HandEye, matrix_to_rpy_deg, pose_to_matrix
 
-SESSIONS_DIR = DATA_DIR / "calibration"
-RESULT_FILE = MEMORY_DIR / "calibration_charuco.json"
-WRIST_FILE = MEMORY_DIR / "hand_eye_wrist.json"
 
 # wrist views: rotation of the tool about its own X, Y, Z (deg) and change of distance to the
 # board (mm, + = farther), all about the pivot (the point on the tool axis at the board).
@@ -59,7 +58,7 @@ class Gates:
 
 @dataclass
 class CalibrationConfig:
-    board: ch.BoardSpec = field(default_factory=ch.BoardSpec)
+    board: BoardSpec = field(default_factory=BoardSpec)
     measured: dict = field(default_factory=dict)
     gates: Gates = field(default_factory=Gates)
     wrist_camera: str = "wrist"
@@ -72,11 +71,12 @@ class CalibrationConfig:
         m = dict(d.get("measured") or {})
         if "tolerance_mm" in m:
             g.tolerance_mm = float(m.pop("tolerance_mm"))
-        return cls(ch.BoardSpec.from_dict(d.get("board") or {}), m, g,
+        return cls(BoardSpec.from_dict(d.get("board") or {}), m, g,
                    d.get("wrist_camera", "wrist"), d.get("env_camera", "env"))
 
 
-def _K_from(intr) -> np.ndarray:
+def camera_matrix_of(intr) -> np.ndarray:
+    """3x3 camera matrix from a drivers.camera.Intrinsics."""
     return np.array([[intr.fx, 0, intr.cx], [0, intr.fy, intr.cy], [0, 0, 1]], float)
 
 
@@ -97,8 +97,8 @@ def capture_env(scene, cfg: CalibrationConfig, session: Path, frames: int = 6, l
         if f.depth_m is not None:
             np.save(session / f"env_{i:02d}_depth.npy", (f.depth_m * 1000).astype(np.uint16))
         if f.intrinsics is not None:
-            out["K"] = _K_from(f.intrinsics).tolist()
-        det = ch.detect(f.color, cfg.board, scales=(1, 2, 3))
+            out["K"] = camera_matrix_of(f.intrinsics).tolist()
+        det = detect(f.color, cfg.board, scales=(1, 2, 3))
         out["frames"].append({"image": f"env_{i:02d}.jpg", "detection": det.to_dict() if det else None})
         time.sleep(0.15)
     n = [len(fr["detection"]["ids"]) if fr["detection"] else 0 for fr in out["frames"]]
@@ -106,12 +106,12 @@ def capture_env(scene, cfg: CalibrationConfig, session: Path, frames: int = 6, l
     return out
 
 
-def _pivot_distance_m(det: ch.Detection, cfg: CalibrationConfig) -> float:
+def _pivot_distance_m(det: Detection, cfg: CalibrationConfig) -> float:
     """Rough camera->board distance from the first wrist view (guessed focal length: the
     pivot only has to keep the board in the picture)."""
     w, h = det.image_size
     K = np.array([[0.9 * w, 0, w / 2], [0, 0.9 * w, h / 2], [0, 0, 1]])
-    T, _ = ch.board_pose(det, cfg.board, K)
+    T, _ = board_pose(det, cfg.board, K)
     return float(np.clip(np.linalg.norm(T[:3, :3] @ cfg.board.center_m + T[:3, 3]), 0.12, 0.5))
 
 
@@ -141,11 +141,11 @@ class Prior:
 def prior_from_session(session: Path, cfg: CalibrationConfig) -> Prior:
     data = json.loads((session / "views.json").read_text(encoding="utf-8"))
     views = data["wrist"]["views"]
-    dets = [ch.Detection.from_dict(v["detection"]) for v in views]
-    K, dist, _ = ch.calibrate_intrinsics(dets, cfg.board)
-    he = ch.hand_eye([pose_to_matrix(v["flange_pose"]) for v in views], dets, cfg.board, K, dist)
+    dets = [Detection.from_dict(v["detection"]) for v in views]
+    K, dist, _ = calibrate_intrinsics(dets, cfg.board)
+    he = hand_eye([pose_to_matrix(v["flange_pose"]) for v in views], dets, cfg.board, K, dist)
     best = max(range(len(dets)), key=lambda i: len(dets[i]))
-    return Prior(he.T_flange_cam, K, dist, he.T_base_board, ch.board_pose(dets[best], cfg.board, K, dist)[0])
+    return Prior(he.T_flange_cam, K, dist, he.T_base_board, board_pose(dets[best], cfg.board, K, dist)[0])
 
 
 def _pose(T: np.ndarray) -> list[float]:
@@ -162,7 +162,7 @@ def camera_view_poses(T_base_flange0: np.ndarray, P_base: np.ndarray, X: np.ndar
     Rc0, c0 = T_bc0[:3, :3], T_bc0[:3, 3]
     v = Rc0.T @ (P_base - c0)
     d0 = float(np.linalg.norm(v))
-    Xi = ch.inv(X)
+    Xi = inv(X)
     out = []
     for tx, ty, tz, dd in views:
         Rc = Rc0 @ pose_to_matrix([0, 0, 0, tx, ty, tz])[:3, :3]
@@ -176,13 +176,13 @@ def aim_start(prims, prior: Prior, cfg: CalibrationConfig, step_deg: float = 10.
     """A fingertip pose where the wrist camera sees the board as in the prior's reference view,
     turned about the vertical through the board centre to the reachable pose closest to the base."""
     P = (prior.T_base_board @ np.r_[cfg.board.center_m, 1])[:3]
-    T_bc_ref = prior.T_base_board @ ch.inv(prior.T_cam_board_ref)
+    T_bc_ref = prior.T_base_board @ inv(prior.T_cam_board_ref)
     best = None
     for psi in np.arange(0, 360, step_deg):
         Rz = np.eye(4)
         Rz[:3, :3] = pose_to_matrix([0, 0, 0, 0, 0, float(psi)])[:3, :3]
         Rz[:3, 3] = P - Rz[:3, :3] @ P                       # rotation about the vertical through P
-        flange = _pose(Rz @ T_bc_ref @ ch.inv(prior.X))
+        flange = _pose(Rz @ T_bc_ref @ inv(prior.X))
         tip = prims.tip_from_flange(flange)
         try:
             prims._check_points(tip, flange[:3])
@@ -199,7 +199,7 @@ FRESH_SHIFT_PX = 3.0      # corners moved at least this much: the frame is from 
 STILL_SHIFT_PX = 0.8      # two frames in a row within this: the camera has stopped moving
 
 
-def corner_shift_px(a: ch.Detection, b: ch.Detection) -> float:
+def corner_shift_px(a: Detection, b: Detection) -> float:
     """Mean pixel shift of the corners two detections share (inf when they share fewer than 4)."""
     common, ia, ib = np.intersect1d(a.ids, b.ids, return_indices=True)
     if len(common) < 4:
@@ -211,14 +211,14 @@ def capture_wrist(prims, scene, cfg: CalibrationConfig, session: Path, speed: in
                   max_views: int = 16, max_drop_mm: float = 20.0, prior: Prior | None = None,
                   log=print) -> dict:
     """Pivot the wrist camera around the board; record (flange pose, corners) at each pose."""
-    def grab(i: int, before: ch.Detection | None = None, timeout_s: float = 5.0):
+    def grab(i: int, before: Detection | None = None, timeout_s: float = 5.0):
         """A FRESH and STILL frame: the wrist stream can lag (18 Nov: a view after a 30° twist was
         the start image again). After a move, wait until the corners differ from `before`, then
         accept two frames in a row that agree. None = no board, or no fresh still frame."""
         deadline, last = time.monotonic() + timeout_s, None
         while time.monotonic() < deadline:
             img = scene.observe(cfg.wrist_camera).color
-            det = ch.detect(img, cfg.board)
+            det = detect(img, cfg.board)
             if det is None:
                 last = None
             elif before is not None and corner_shift_px(det, before) < FRESH_SHIFT_PX:
@@ -250,7 +250,7 @@ def capture_wrist(prims, scene, cfg: CalibrationConfig, session: Path, speed: in
     floor = start[2] - max_drop_mm
     if prior is not None:                       # orbit the camera about the board centre it sees now
         T_bf0 = pose_to_matrix(state["flange_pose"])
-        T_cb0, _ = ch.board_pose(det0, cfg.board, prior.K, prior.dist)
+        T_cb0, _ = board_pose(det0, cfg.board, prior.K, prior.dist)
         P = (T_bf0 @ prior.X @ T_cb0 @ np.r_[cfg.board.center_m, 1])[:3]
         poses = [(label, prims.tip_from_flange(_pose(T))) for label, T in camera_view_poses(T_bf0, P, prior.X)]
         floor = start[2] - 3 * max_drop_mm      # orbiting tilts the camera, so the tip moves more
@@ -283,7 +283,7 @@ def capture_wrist(prims, scene, cfg: CalibrationConfig, session: Path, speed: in
             skipped.append({"pose": label, "why": str(exc)[:120]})
             continue
         time.sleep(settle_s)
-        det, image = grab(i, before=ch.Detection.from_dict(views[-1]["detection"]))
+        det, image = grab(i, before=Detection.from_dict(views[-1]["detection"]))
         flange = prims.get_state()["flange_pose"]
         if det is None:
             skipped.append({"pose": label, "why": "board not seen (or no fresh, still frame)"})
@@ -315,15 +315,15 @@ def solve(data: dict, cfg: CalibrationConfig, table_z_mm: float | None = None, s
 
     # wrist
     views = data["wrist"]["views"]
-    dets = [ch.Detection.from_dict(v["detection"]) for v in views]
+    dets = [Detection.from_dict(v["detection"]) for v in views]
     rep["wrist_views"] = len(views)
     wrist = None
     if len(views) < g.min_wrist_views:
         problem("wrist", f"only {len(views)} wrist views with the board (need {g.min_wrist_views})")
     else:
-        K, dist, rms = ch.calibrate_intrinsics(dets, spec)
+        K, dist, rms = calibrate_intrinsics(dets, spec)
         T_bf = [pose_to_matrix(v["flange_pose"]) for v in views]
-        he = ch.hand_eye(T_bf, dets, spec, K, dist)
+        he = hand_eye(T_bf, dets, spec, K, dist)
         wrist = {"K": K, "dist": dist, "intrinsics_px": rms, "he": he}
         off = he.T_flange_cam[:3, 3] * 1000
         board = (he.T_base_board[:3, :3] @ spec.center_m + he.T_base_board[:3, 3]) * 1000
@@ -354,7 +354,7 @@ def solve(data: dict, cfg: CalibrationConfig, table_z_mm: float | None = None, s
 
     # env
     env = data.get("env") or {}
-    env_dets = [ch.Detection.from_dict(f["detection"]) for f in env.get("frames", []) if f.get("detection")]
+    env_dets = [Detection.from_dict(f["detection"]) for f in env.get("frames", []) if f.get("detection")]
     env_dets = [d for d in env_dets if len(d) >= g.min_env_corners]
     T_base_env = None
     if not env_dets or "K" not in env:
@@ -363,8 +363,8 @@ def solve(data: dict, cfg: CalibrationConfig, table_z_mm: float | None = None, s
                                f"{g.min_env_corners}): lean the board toward the D455 or bring it closer")
     else:
         K_env = np.array(env["K"])
-        poses = [ch.board_pose(d, spec, K_env) for d in env_dets]
-        T_env_board = ch.average_poses([T for T, _ in poses])
+        poses = [board_pose(d, spec, K_env) for d in env_dets]
+        T_env_board = average_poses([T for T, _ in poses])
         px = float(np.median([e for _, e in poses]))
         spread = max(np.linalg.norm(T[:3, 3] - T_env_board[:3, 3]) for T, _ in poses) * 1000
         rep["env"] = {"frames_used": len(env_dets), "corners": int(np.median([len(d) for d in env_dets])),
@@ -376,13 +376,13 @@ def solve(data: dict, cfg: CalibrationConfig, table_z_mm: float | None = None, s
         if session is not None:
             depth_file = session / env["frames"][0]["image"].replace(".jpg", "_depth.npy")
             if depth_file.exists():
-                dmm = ch.depth_check_mm(env_dets[0], spec, poses[0][0], np.load(depth_file) / 1000.0)
+                dmm = depth_check_mm(env_dets[0], spec, poses[0][0], np.load(depth_file) / 1000.0)
                 rep["env"]["depth_minus_board_mm"] = dmm
                 if dmm is not None and abs(dmm) > g.max_env_depth_mm:
                     problem("env", f"D455 depth and board pose disagree by {dmm:.0f} mm "
                                            "(wrong square size, or the depth is not aligned to colour)")
         if wrist is not None:
-            T_base_env = ch.env_from_board(wrist["he"].T_base_board, T_env_board)
+            T_base_env = env_from_board(wrist["he"].T_base_board, T_env_board)
             rep["env"]["camera_in_base_mm"] = (T_base_env[:3, 3] * 1000).round(1).tolist()
 
     rep["checks"] = measured_checks(cfg, T_base_env, wrist["he"] if wrist else None, table_z_mm)
@@ -401,7 +401,7 @@ def solve(data: dict, cfg: CalibrationConfig, table_z_mm: float | None = None, s
     return rep
 
 
-def measured_checks(cfg: CalibrationConfig, T_base_env, he: ch.HandEyeResult | None, table_z_mm) -> list[dict]:
+def measured_checks(cfg: CalibrationConfig, T_base_env, he: HandEyeResult | None, table_z_mm) -> list[dict]:
     """Solved geometry vs the tape measure. Soft checks only warn (rough measurement)."""
     m, tol, out = cfg.measured, cfg.gates.tolerance_mm, []
 
@@ -431,23 +431,18 @@ def measured_checks(cfg: CalibrationConfig, T_base_env, he: ch.HandEyeResult | N
 # save
 # --------------------------------------------------------------------------------------------
 
-def _backup(path: Path, stamp: str) -> None:
-    if path.exists():
-        path.rename(path.with_name(f"{path.stem}.{stamp}.old.json"))
-
-
-def save(rep: dict, env_path: Path, stamp: str, scene=None, result_file: Path = RESULT_FILE,
+def save(rep: dict, env_path: Path, stamp: str, scene=None, result_file: Path = CALIBRATION_FILE,
          wrist_file: Path = WRIST_FILE) -> None:
     """Write the accepted calibration (env HandEye file the Scene reads, wrist HandEye, full result)."""
     sol = rep["_solution"]
     if sol["T_base_env"] is not None:
-        _backup(env_path, stamp)
+        backup(env_path, stamp)
         HandEye(sol["T_base_env"], eye_in_hand=False).save(env_path)
         if scene is not None:
             scene.env_calibration = HandEye(sol["T_base_env"], eye_in_hand=False)
     w = sol["wrist"]
     if w is not None:
-        _backup(wrist_file, stamp)
+        backup(wrist_file, stamp)
         HandEye(w["he"].T_flange_cam, eye_in_hand=True).save(wrist_file)
     result = {k: v for k, v in rep.items() if not k.startswith("_")}
     result["created"] = stamp
@@ -457,7 +452,7 @@ def save(rep: dict, env_path: Path, stamp: str, scene=None, result_file: Path = 
         result["T_base_board"] = w["he"].T_base_board.tolist()
     if sol["T_base_env"] is not None:
         result["T_base_env"] = sol["T_base_env"].tolist()
-    _backup(result_file, stamp)
+    backup(result_file, stamp)
     result_file.parent.mkdir(parents=True, exist_ok=True)
     result_file.write_text(json.dumps(result, indent=1) + "\n", encoding="utf-8")
 
@@ -485,10 +480,9 @@ def run(prims, scene, cfg: CalibrationConfig, env_path: Path, speed: int = 10, m
     rep["session"] = str(session)
     rep["skipped_poses"] = len(data["wrist"]["skipped"])
     rep["start_tip"] = [round(v, 2) for v in data["wrist"]["start_tip"]]    # where to look from next time
-    rep["saved"] = []
-    if apply and (rep["wrist_accepted"] or rep["env_accepted"]):
+    rep["saved"] = [k for k in ("wrist", "env") if rep[f"{k}_accepted"]] if apply else []
+    if rep["saved"]:
         save(rep, env_path, stamp, scene)
-        rep["saved"] = [k for k in ("wrist", "env") if rep[f"{k}_accepted"]]
     (session / "report.json").write_text(json.dumps(public(rep), indent=1) + "\n", encoding="utf-8")
     return rep
 
@@ -501,7 +495,19 @@ def solve_session(session: Path, cfg: CalibrationConfig) -> dict:
     return rep
 
 
-def last_start_tip(result_file: Path = RESULT_FILE) -> list[float] | None:
+def last_session(result_file: Path = CALIBRATION_FILE) -> Path | None:
+    """The session directory of the last saved calibration (to aim the next run from), if it is still there."""
+    try:
+        session = json.loads(result_file.read_text(encoding="utf-8")).get("session")
+    except (OSError, ValueError):
+        return None
+    path = Path(session) if session else None
+    if path is not None and not path.is_absolute():
+        path = SESSIONS_DIR.parent.parent / path
+    return path if path is not None and (path / "views.json").exists() else None
+
+
+def last_start_tip(result_file: Path = CALIBRATION_FILE) -> list[float] | None:
     """Fingertip pose the last saved calibration started from (the wrist camera saw the board there)."""
     try:
         return json.loads(result_file.read_text(encoding="utf-8")).get("start_tip")

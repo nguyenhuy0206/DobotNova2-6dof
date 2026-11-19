@@ -1,11 +1,12 @@
 """Measured facts about the work cell (data/memory/workcell.json).
 
     table_z_mm   fingertip Z (robot base frame) when the fingertips just touch the
-                 metal table. Taught once with scripts/teach_table.py. Every motion
+                 metal table. Taught with scripts/calibrate.py table (or the touch
+                 survey, scripts/calibrate.py survey). Every motion
                  primitive refuses to bring the fingertip / flange closer to it than
                  the clearances in config/robot.yaml `table:`.
-    block_top_z_mm  fingertip Z touching the top of a cube on the box (teach_table.py
-                 --block-top). Pick skills use it instead of the env camera's Z, which
+    block_top_z_mm  fingertip Z touching the top of a cube on the box (scripts/calibrate.py
+                 table --block-top). Pick skills use it instead of the env camera's Z, which
                  can be off by 1–2 cm.
 """
 from __future__ import annotations
@@ -14,9 +15,7 @@ import json
 import time
 from pathlib import Path
 
-from common.paths import MEMORY_DIR
-
-WORKCELL_FILE = MEMORY_DIR / "workcell.json"
+from calibration.files import WORKCELL_FILE
 
 
 def load_workcell(path: Path = WORKCELL_FILE) -> dict:

@@ -1,12 +1,12 @@
-"""ChArUco calibration: detection on a rendered board, and the solvers against a known ground truth."""
+"""Calibration package (ChArUco cameras): detection on a rendered board, and the solvers against a known ground truth."""
 import cv2
 import numpy as np
 import pytest
 
-from perception import charuco as ch
+from calibration import board, geometry, hand_eye
 from perception.transforms import pose_to_matrix
 
-SPEC = ch.BoardSpec()                       # the printed board: 7x5, 20.85 mm squares, 15 mm markers
+SPEC = board.BoardSpec()                       # the printed board: 7x5, 20.85 mm squares, 15 mm markers
 K = np.array([[520.0, 0, 322], [0, 518.0, 238], [0, 0, 1]])
 DIST = np.array([-0.08, 0.05, 0.001, -0.0005, 0.0])
 SIZE = (640, 480)
@@ -19,12 +19,12 @@ T_BASE_ENV = pose_to_matrix([200, -620, 135, -105, 0, 20])
 
 def _det(T_cam_board, noise_px=0.15, rng=None):
     ids = np.arange((SPEC.squares[0] - 1) * (SPEC.squares[1] - 1))
-    obj = ch.object_points(SPEC, ids)
+    obj = board.object_points(SPEC, ids)
     r = cv2.Rodrigues(T_cam_board[:3, :3])[0]
     px, _ = cv2.projectPoints(obj, r, T_cam_board[:3, 3], K, DIST)
     px = px.reshape(-1, 2) + (rng.normal(0, noise_px, (len(ids), 2)) if rng is not None else 0)
     ok = (px[:, 0] > 0) & (px[:, 0] < SIZE[0]) & (px[:, 1] > 0) & (px[:, 1] < SIZE[1])
-    return ch.Detection(px[ok].astype(np.float32), ids[ok], 12, SIZE)
+    return board.Detection(px[ok].astype(np.float32), ids[ok], 12, SIZE)
 
 
 def _views(n=15, seed=1):
@@ -38,8 +38,8 @@ def _views(n=15, seed=1):
         # camera above the board centre looking down, tilted; flange from the camera
         T_base_cam = pose_to_matrix([0, 0, 0, 180 + tilt[0], tilt[1], twist])
         T_base_cam[:3, 3] = centre[:3] - T_base_cam[:3, 2] * height + rng.normal(0, 0.02, 3)
-        T_base_flange = T_base_cam @ ch.inv(T_FLANGE_CAM)
-        out.append((T_base_flange, _det(ch.inv(T_base_cam) @ T_BASE_BOARD, rng=rng)))
+        T_base_flange = T_base_cam @ geometry.inv(T_FLANGE_CAM)
+        out.append((T_base_flange, _det(geometry.inv(T_base_cam) @ T_BASE_BOARD, rng=rng)))
     return out
 
 
@@ -49,45 +49,45 @@ def test_detects_the_printed_board_in_a_rendered_oblique_view():
     src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
     dst = np.float32([[200, 250], [460, 250], [560, 400], [90, 400]])        # seen from low and far
     canvas = cv2.warpPerspective(img, cv2.getPerspectiveTransform(src, dst), SIZE, borderValue=200)
-    det = ch.detect(canvas, SPEC)
+    det = board.detect(canvas, SPEC)
     assert det is not None and len(det) >= 18
 
 
 def test_intrinsics_hand_eye_and_env_chain_recover_the_ground_truth():
     views = _views()
     dets = [d for _, d in views]
-    K_est, dist_est, rms = ch.calibrate_intrinsics(dets, SPEC)
+    K_est, dist_est, rms = board.calibrate_intrinsics(dets, SPEC)
     assert rms < 0.5
     assert K_est[0, 0] == pytest.approx(K[0, 0], rel=0.02)
 
-    res = ch.hand_eye([T for T, _ in views], dets, SPEC, K_est, dist_est)
+    res = hand_eye.hand_eye([T for T, _ in views], dets, SPEC, K_est, dist_est)
     assert res.reproj_px < 0.5
     assert np.linalg.norm(res.T_flange_cam[:3, 3] - T_FLANGE_CAM[:3, 3]) * 1000 < 2.0
-    assert ch.rot_deg(res.T_flange_cam[:3, :3].T @ T_FLANGE_CAM[:3, :3]) < 0.5
+    assert geometry.rot_deg(res.T_flange_cam[:3, :3].T @ T_FLANGE_CAM[:3, :3]) < 0.5
     assert np.linalg.norm(res.T_base_board[:3, 3] - T_BASE_BOARD[:3, 3]) * 1000 < 2.0
 
     # env camera sees the same board: chain through it
     K_env = np.array([[386.0, 0, 320.5], [0, 385.0, 244.0], [0, 0, 1]])
-    T_env_board = ch.inv(T_BASE_ENV) @ T_BASE_BOARD
-    obj = ch.object_points(SPEC, np.arange(24))
+    T_env_board = geometry.inv(T_BASE_ENV) @ T_BASE_BOARD
+    obj = board.object_points(SPEC, np.arange(24))
     px, _ = cv2.projectPoints(obj, cv2.Rodrigues(T_env_board[:3, :3])[0], T_env_board[:3, 3], K_env, None)
-    env_pose, err = ch.board_pose(ch.Detection(px.reshape(-1, 2).astype(np.float32), np.arange(24), 12, SIZE),
+    env_pose, err = board.board_pose(board.Detection(px.reshape(-1, 2).astype(np.float32), np.arange(24), 12, SIZE),
                                   SPEC, K_env)
     assert err < 0.1
-    T = ch.env_from_board(res.T_base_board, env_pose)
+    T = hand_eye.env_from_board(res.T_base_board, env_pose)
     assert np.linalg.norm(T[:3, 3] - T_BASE_ENV[:3, 3]) * 1000 < 3.0
 
 
 def test_average_poses_is_a_rotation():
     Ts = [pose_to_matrix([1, 2, 3, 0, 0, a]) for a in (9, 10, 11)]
-    T = ch.average_poses(Ts)
+    T = geometry.average_poses(Ts)
     assert np.allclose(T[:3, :3] @ T[:3, :3].T, np.eye(3))
-    assert ch.rot_deg(T[:3, :3].T @ Ts[1][:3, :3]) < 1e-6
+    assert geometry.rot_deg(T[:3, :3].T @ Ts[1][:3, :3]) < 1e-6
 
 
 # --- the procedure (offline part) ---------------------------------------------------------------
 
-from perception import charuco_calibration as cc  # noqa: E402
+from calibration import cameras as cc  # noqa: E402
 from perception.transforms import matrix_to_rpy_deg  # noqa: E402
 
 
@@ -96,10 +96,10 @@ def _session(env_pose=T_BASE_ENV):
               "flange_pose": [*(T[:3, 3] * 1000).tolist(), *matrix_to_rpy_deg(T[:3, :3])]}
              for i, (T, d) in enumerate(_views())]
     K_env = np.array([[386.0, 0, 320.5], [0, 385.0, 244.0], [0, 0, 1]])
-    T_env_board = ch.inv(env_pose) @ T_BASE_BOARD
-    px, _ = cv2.projectPoints(ch.object_points(SPEC, np.arange(24)), cv2.Rodrigues(T_env_board[:3, :3])[0],
+    T_env_board = geometry.inv(env_pose) @ T_BASE_BOARD
+    px, _ = cv2.projectPoints(board.object_points(SPEC, np.arange(24)), cv2.Rodrigues(T_env_board[:3, :3])[0],
                               T_env_board[:3, 3], K_env, None)
-    det = ch.Detection(px.reshape(-1, 2).astype(np.float32), np.arange(24), 12, SIZE)
+    det = board.Detection(px.reshape(-1, 2).astype(np.float32), np.arange(24), 12, SIZE)
     return {"wrist": {"views": views}, "env": {"K": K_env.tolist(), "frames": [{"image": "e.jpg", "detection": det.to_dict()}]}}
 
 
@@ -168,3 +168,33 @@ def test_camera_orbit_keeps_the_board_centre_at_the_same_pixel():
         v = T_bc[:3, :3].T @ (P - T_bc[:3, 3])
         assert np.allclose(v / np.linalg.norm(v), v0 / np.linalg.norm(v0), atol=1e-9), label   # same pixel
         assert np.linalg.norm(v) == pytest.approx(np.linalg.norm(v0) + dd / 1000)
+
+
+# --- touch survey ----------------------------------------------------------------------------------
+
+from calibration import survey  # noqa: E402
+
+
+def test_survey_recovers_the_gripper_contact_model_from_three_touches():
+    centre, finger = np.array([4.6, 2.2, 127.1]), np.array([1.3, -31.6, 0.0])
+    dot = np.array([-306.0, -457.0, 0.3])
+
+    def touching(rpy, contact):                      # flange pose that puts `contact` on the dot
+        R = pose_to_matrix([0, 0, 0, *rpy])[:3, :3]
+        return dot - R @ contact, R
+
+    v = touching([180, 4, 30], centre)
+    a = touching([180 - 45, 5, 40], centre + finger)
+    b = touching([180 + 40, -10, -50], centre - finger)
+    m = survey.fit_contact(v, a, b)
+    assert np.allclose(m.centre_mm, centre, atol=1e-6) and np.allclose(m.finger_mm, finger, atol=1e-6)
+    assert max(m.residual_mm) < 1e-6 and np.allclose(m.dot_mm, dot)
+    assert np.allclose(survey.lowest_contact(a, m), dot)          # the tilted fingertip is the lowest point
+    assert survey.ContactModel.from_dict(m.to_dict()).tool_length_mm == pytest.approx(127.1, abs=0.05)
+
+
+def test_enclosing_cylinder_covers_every_point_with_margin():
+    pts = [np.array([0, 0, 100]), np.array([100, 0, 150]), np.array([50, 40, 120])]
+    c = survey.enclosing_cylinder(pts, margin_mm=40)
+    assert c["xy"] == [50, 20] and c["radius_mm"] == round(np.hypot(50, 20) + 40)
+    assert c["z_touched"] == [100.0, 150.0]

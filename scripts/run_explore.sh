@@ -2,7 +2,6 @@
 # Astra explore mode. Start the cameras first in another terminal:  scripts/run_vision.sh
 #
 #   scripts/run_explore.sh                  task from config/explore.yaml
-#   scripts/run_explore.sh --recalibrate    the camera was moved since the last calibration
 #   scripts/run_explore.sh --mode confirm   y/N before every motion
 set -euo pipefail
 cd "$(dirname "$0")/.."

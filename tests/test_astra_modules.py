@@ -13,7 +13,7 @@ from common.errors import ValidationError
 from drivers.camera import Frame, Intrinsics
 from memory.skills import SkillLibrary
 from memory.store import EpisodeStore
-from perception.calibration import solve_rigid_transform
+from calibration.geometry import solve_rigid_transform
 from perception.scene import Scene
 from perception.transforms import HandEye
 
@@ -182,7 +182,8 @@ def test_harness_attaches_look_image_and_saves_it(kit, tmp_path):
 
 
 def test_calibration_solves_unknown_marker_offset_and_flags_outlier():
-    from perception.calibration import outliers, solve_with_marker_offset
+    from calibration.geometry import outliers
+    from calibration.hand_eye import solve_with_marker_offset
     from perception.transforms import pose_to_matrix
     rng = np.random.default_rng(1)
     true_offset = np.array([37.0, 67.0, 9.0])
@@ -294,7 +295,7 @@ def test_search_object_returns_to_start_when_not_found(prims, sim, tmp_path):
 
 
 def test_touch_calibration_solver():
-    from perception.calibration import solve_points
+    from calibration.geometry import solve_points
     rng = np.random.default_rng(3)
     base = rng.uniform([-550, -450, 10], [-350, -150, 60], (9, 3))
     inv = np.linalg.inv(CAM_TO_BASE)
@@ -305,7 +306,7 @@ def test_touch_calibration_solver():
 
 
 def test_leave_one_out_reports_unseen_error():
-    from perception.calibration import leave_one_out_errors
+    from calibration.geometry import leave_one_out_errors
     rng = np.random.default_rng(4)
     base = rng.uniform([-550, -450, -60], [-350, -150, 30], (8, 3))
     inv = np.linalg.inv(CAM_TO_BASE)

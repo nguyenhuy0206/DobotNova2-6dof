@@ -633,7 +633,7 @@ def create_primitives(robot_cfg=None, actions: RobotActions | None = None, owner
 
         cfg = robot_cfg or load_robot_config()
         actions = RobotActions(Nova2(cfg.ip, cfg.timeout_s), cfg)
-    from memory.workcell import load_workcell
+    from calibration.workcell import load_workcell
 
     prims = PrimitiveSkills(actions, gripper_factory(actions, owner=owner))
     prims.table_z_mm = load_workcell().get("table_z_mm")

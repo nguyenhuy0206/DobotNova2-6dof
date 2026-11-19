@@ -1,19 +1,19 @@
 """Explore mode: Astra learns the cell by itself from primitive tools.
 
     session = build_explore()          # config/explore.yaml + agent.yaml + robot.yaml
-    problems = session.preflight()     # robot ready, table taught, cameras, marker visible
+    problems = session.preflight()     # robot ready, table taught, env calibrated, cameras, marker visible
     session.harness.run(session.cfg.task)
 
 What is different from the plain agent (agent/toolkit.py):
-  * only primitives + seeing + self-calibration + learning tools (no seed skills,
+  * only primitives + seeing + learning tools (no seed skills,
     no search_object): every composite skill is one Astra wrote itself,
     kept in its own file (skills_explore.json)
   * hard limits enforced in code, whatever the model asks:
       speed ≤ agent.yaml max_speed · fingertip/flange above the taught table along the
       whole path · the env camera must still see the robot after every move (else the
       move is undone) · gripper never closes beyond gripper.close_position
-  * the env camera is calibrated by Astra at runtime (record_calibration_point /
-    solve_calibration) — no calibration from another day is reused unless kept
+  * the cameras, table and limits are calibrated by the operator (scripts/calibrate.sh); the
+    calibration stays in use until the operator calibrates again
   * knowledge (memory/knowledge.py): the harness records every robot action as an observation;
     Astra builds physical concepts and hypotheses with predictions, checked against observations
 """
@@ -39,7 +39,8 @@ from memory.hypotheses import HypothesisStore
 from memory.knowledge import MAX_LIVE_HYPOTHESES, KnowledgeStore
 from memory.notes import NotesStore
 from memory.skills import SkillLibrary
-from perception.robot_view import RobotViewGuard, SelfCalibration
+from calibration.marker import SelfCalibration
+from perception.robot_view import RobotViewGuard
 from perception.scene import Scene
 
 log = get_logger(__name__)
@@ -179,7 +180,9 @@ class ExploreSession:
         except (RobotError, OSError) as exc:
             problems.append(f"robot unreachable: {exc}")
         if p.table_z_mm is None:
-            problems.append("table height not taught: run  .venv/bin/python scripts/teach_table.py")
+            problems.append("table height not taught: run  scripts/calibrate.sh table  (or survey table)")
+        if self.kit.scene.env_calibration is None:
+            problems.append("env camera not calibrated: run  scripts/calibrate.sh cameras")
         if getattr(p.cfg.gripper, "via_ui", False):
             try:
                 p.gripper.status()
@@ -328,7 +331,7 @@ def auto_calibrate_spec(calibration: SelfCalibration) -> ActionSpec:
     def run(center: list | None = None, span_mm: float = 100, points: int = 12) -> dict:
         from collections import Counter
 
-        from perception.auto_calibration import auto_calibrate, suggest_center
+        from calibration.marker import auto_calibrate, suggest_center
         p = calibration.p
         z_mid = (p.table_z_mm + 150) if p.table_z_mm is not None else None
         if center is not None:
@@ -503,7 +506,7 @@ def compact_state(p, executor=None, runner=None) -> dict:
     return out
 
 
-def build_explore(confirm=None, mode: str | None = None, recalibrate: bool = False,
+def build_explore(confirm=None, mode: str | None = None,
                   client: AstraClient | None = None, variant: str | None = None) -> ExploreSession:
     cfg = load_explore_config()
     robot_cfg, perception_cfg = load_robot_config(), load_perception_config()
@@ -519,34 +522,20 @@ def build_explore(confirm=None, mode: str | None = None, recalibrate: bool = Fal
     primitives.grip_close_position = cfg.gripper.close_position
     primitives.grip_open_position = cfg.gripper.open_position
     primitives.grip_speed = cfg.gripper.speed
-    # The camera setup changes from day to day: a calibration from another day is never used.
-    stale = not recalibrate and _from_another_day(perception_cfg.calibration_path)
-    if recalibrate or stale:
-        _set_aside(perception_cfg.calibration_path)
-        if stale:
-            log.warning("env calibration is from another day — set aside, Astra must calibrate again")
+    # The env calibration is operator infrastructure (scripts/calibrate.sh cameras): it is used until
+    # the operator calibrates again; preflight refuses to start without one.
     scene = Scene.from_config(perception_cfg, workspace=robot_cfg.workspace)
-    if recalibrate or stale:
-        scene.env_calibration = None
     if primitives.table_z_mm is not None:      # tape on the arm/wrist camera is not a block
         scene.object_z_max = primitives.table_z_mm + 150
     guard = (RobotViewGuard(scene, cfg.view_guard.marker_color, cfg.view_guard.min_area_px)
              if cfg.view_guard.enabled else None)
     primitives.view_guard = guard
     calibration = SelfCalibration(scene, primitives, cfg.view_guard.marker_color, cfg.view_guard.min_area_px)
-    if recalibrate or (calibration.points and not _points_from_today(calibration.points)):
-        calibration.reset()
     notes = NotesStore()                  # raw archive (read_history); prompts get the knowledge digest
     knowledge = KnowledgeStore()
     investigation = Investigation(gate_after_repeats=cfg.diagnosis.gate_after_repeats, knowledge=knowledge)
     path = REPO_ROOT / cfg.skills_file
     library = SkillLibrary(path)
-    # a calibration file without an accepted, quality-checked solve from this session is not trusted
-    if scene.env_calibration is not None and not calibration.solution:
-        log.warning("env calibration has no quality record — switched off, Astra must calibrate and verify")
-        _set_aside(perception_cfg.calibration_path)
-        scene.env_calibration = None
-
     executor, kit = build_toolkit(agent_cfg.execution_mode, confirm, robot_cfg=robot_cfg, agent_cfg=agent_cfg,
                                   perception_cfg=perception_cfg, primitives=primitives, scene=scene,
                                   library=library, seed_skills=False,
@@ -556,7 +545,7 @@ def build_explore(confirm=None, mode: str | None = None, recalibrate: bool = Fal
     from agent.harness import HarnessOptions
     from agent.pick_place_skills import ensure_pick_place_skills
 
-    from memory.workcell import load_workcell
+    from calibration.workcell import load_workcell
 
     block_top = load_workcell().get("block_top_z_mm")
     runner = kit.skills
@@ -594,20 +583,3 @@ def _observed(executor, name: str) -> bool:
 def _snapshot(p) -> dict:
     s = p.get_state()
     return {"pose": s.get("pose"), "gripper": s.get("gripper") or {}}
-
-
-def _from_another_day(path) -> bool:
-    import datetime as dt
-    return path.exists() and dt.date.fromtimestamp(path.stat().st_mtime) != dt.date.today()
-
-
-def _points_from_today(points: list[dict]) -> bool:
-    import datetime as dt
-    return all(dt.date.fromtimestamp(p.get("t", 0)) == dt.date.today() for p in points)
-
-
-def _set_aside(path) -> None:
-    """Keep an old calibration file for reference but stop using it."""
-    if path.exists():
-        import time
-        path.rename(path.with_name(f"{path.stem}.{time.strftime('%Y%m%d-%H%M%S')}.old.json"))

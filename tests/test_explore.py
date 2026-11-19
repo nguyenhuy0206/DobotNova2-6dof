@@ -112,8 +112,8 @@ def test_grip_closes_only_to_limit(p, gripper):
 
 # ---------------------------------------------------------------- self-calibration
 def test_self_calibration_recovers_camera(tmp_path, monkeypatch):
-    from perception import robot_view
-    from perception.robot_view import SelfCalibration
+    from calibration import marker
+    from calibration.marker import SelfCalibration
 
     rng = np.random.default_rng(1)
     T = pose_to_matrix([400, -200, 600, -120, 5, 30])                 # camera -> base (metres)
@@ -131,7 +131,7 @@ def test_self_calibration_recovers_camera(tmp_path, monkeypatch):
                             env_calibration=None, observe=lambda cam: "frame",
                             locate=lambda f, u, v: (1.0, list(cam_point(current["pose"])), None))
     prims = SimpleNamespace(get_state=lambda: {"flange_pose": current["pose"], "moving": False})
-    monkeypatch.setattr(robot_view, "find_marker", lambda *a: SimpleNamespace(center=(320, 240)))
+    monkeypatch.setattr(marker, "find_marker", lambda *a: SimpleNamespace(center=(320, 240)))
     cal = SelfCalibration(scene, prims, session_file=tmp_path / "session.json")
 
     with pytest.raises(ValidationError, match="need"):
@@ -173,7 +173,7 @@ def test_explore_tools_registered(p, tmp_path):
     from memory.knowledge import KnowledgeStore
     from memory.notes import NotesStore
     from memory.skills import SkillLibrary
-    from perception.robot_view import SelfCalibration
+    from calibration.marker import SelfCalibration
     from perception.scene import Scene
 
     cfg = load_explore_config()
@@ -225,7 +225,7 @@ class _FakeCal:
 
 
 def test_auto_calibration_lifts_then_visits_pattern(table, sim):
-    from perception.auto_calibration import auto_calibrate
+    from calibration.marker import auto_calibrate
 
     sim.state["pose"] = [300.0, 0.0, 5.0, 180.0, 0.0, 0.0]        # below the safe floor (just taught)
     sim.fk = lambda j: list(sim.state["pose"])
@@ -245,7 +245,7 @@ def test_auto_calibration_lifts_then_visits_pattern(table, sim):
 
 
 def test_auto_calibration_aborts_on_alarm(table, sim):
-    from perception.auto_calibration import auto_calibrate
+    from calibration.marker import auto_calibrate
 
     sim.fk = lambda j: list(sim.state["pose"])
     sim.state["pose"] = [300.0, 0.0, 200.0, 180.0, 0.0, 0.0]
@@ -278,8 +278,8 @@ def test_unreachable_pose_refused_without_alarm(p, sim):
 
 
 def test_solve_drops_a_bad_point(tmp_path, monkeypatch):
-    from perception import robot_view
-    from perception.robot_view import SelfCalibration
+    from calibration import marker
+    from calibration.marker import SelfCalibration
 
     rng = np.random.default_rng(3)
     T = pose_to_matrix([400, -200, 600, -120, 5, 30])
@@ -422,8 +422,8 @@ def test_open_gripper_partial(p, gripper):
 
 
 def _calibration_world(tmp_path, monkeypatch, seed=5, n=10):
-    from perception import robot_view
-    from perception.robot_view import SelfCalibration
+    from calibration import marker
+    from calibration.marker import SelfCalibration
 
     rng = np.random.default_rng(seed)
     T = pose_to_matrix([400, -200, 600, -120, 5, 30])
@@ -439,7 +439,7 @@ def _calibration_world(tmp_path, monkeypatch, seed=5, n=10):
                             env_calibration=None, observe=lambda cam: "frame",
                             locate=lambda f, u, v: (1.0, list(cam_point(world["pose"])), None))
     prims = SimpleNamespace(get_state=lambda: {"flange_pose": world["pose"], "moving": False})
-    monkeypatch.setattr(robot_view, "find_marker", lambda *a: SimpleNamespace(center=(320, 240)))
+    monkeypatch.setattr(marker, "find_marker", lambda *a: SimpleNamespace(center=(320, 240)))
     cal = SelfCalibration(scene, prims, session_file=tmp_path / "session.json")
     poses = [[250 + rng.uniform(-120, 120), rng.uniform(-150, 150), 220 + rng.uniform(0, 200),
               180 + rng.uniform(-25, 25), rng.uniform(-25, 25), rng.uniform(-90, 90)] for _ in range(n)]
@@ -505,7 +505,7 @@ def test_auto_calibrate_tool_runs_the_scripted_calibration(monkeypatch):
     from types import SimpleNamespace as NS
 
     from agent.explore import auto_calibrate_spec
-    from perception import auto_calibration
+    from calibration import marker as auto_calibration
 
     calls = {}
     prims = NS(table_z_mm=41.96, speed_cap=10)
@@ -525,3 +525,19 @@ def test_auto_calibrate_tool_runs_the_scripted_calibration(monkeypatch):
     assert out["calibrated"] and out["rms_mm"] == 4.4 and out["skipped_why"] == {"unreachable": 2}
     spec.handler(center=[-320, -360, 200], span_mm=80)
     assert calls["center"] == [-320.0, -360.0, 200.0] and calls["span"] == 80.0
+
+
+def test_preflight_refuses_without_an_env_calibration_and_never_expires_one():
+    """18 Nov: calibration is operator infrastructure; a calibration from another day stays in use."""
+    from types import SimpleNamespace
+
+    from agent import explore
+    from agent.explore import ExploreSession
+    prims = SimpleNamespace(get_state=lambda: {"mode": 5, "error": False}, table_z_mm=0.3,
+                            cfg=SimpleNamespace(gripper=SimpleNamespace(via_ui=False)))
+    scene = SimpleNamespace(env_calibration=None, observe=lambda cam: None)
+    me = SimpleNamespace(kit=SimpleNamespace(primitives=prims, scene=scene), view_guard=None)
+    assert any("not calibrated" in p for p in ExploreSession.preflight(me))
+    scene.env_calibration = object()
+    assert ExploreSession.preflight(me) == []
+    assert not hasattr(explore, "_from_another_day") and not hasattr(explore, "_set_aside")

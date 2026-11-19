@@ -19,6 +19,7 @@ src/
   actions/     validation.py (limits + safety) · robot_actions.py · executor.py (dry_run/confirm/live) · registry.py (tool catalogue)
   agent/       astra_client.py · tools.py (→ function tools) · harness.py (model ⇄ tool loop)
   perception/  detection.py (HSV colour blobs) · transforms.py (pixel → camera → base, hand-eye)
+  calibration/ board · hand_eye · cameras (ChArUco, both cameras) · survey (touches) · table · workcell · files
   memory/      store.py (positions, episodes JSONL) · skills.py (skill library + retrieval)
   common/      config, errors, types, paths, logging
 ui/            app.py (HTTP router) · skills_api.py · camera_api.py · index.html · debug_skills.js/.css · debug_cameras.js
@@ -130,8 +131,8 @@ Composite skills live in `data/memory/skills.json`. They start with
 
 Before picking for real:
 1. Set `gripper.tool_length_mm` in `config/robot.yaml` (flange → fingertip).
-2. Calibrate the D455 to the robot: `python scripts/calibrate_env_camera.py --color red`
-   (8+ points, RMS < 5 mm). Use `--tune` to check the HSV colour masks.
+2. Calibrate the cell: see **Calibration** below (`scripts/calibrate.sh`). Use
+   `scripts/calibrate.sh colors` to check the HSV colour masks.
 3. Tune the colours in `config/perception.yaml` for your lighting.
 
 ## Astra harness
@@ -178,19 +179,37 @@ scripts/run_explore.sh --skills | --promote NAME | --rollback NAME VERSION
 - Joint jog 0.1–20°, speed 1–100 % (see `config/robot.yaml`).
 - The workspace box in `robot.yaml` is a placeholder. Measure your cell before relying on it.
 
+## Calibration
+
+Operator infrastructure, one command: `scripts/calibrate.sh` (the code: `src/calibration/`,
+the result files: `src/calibration/files.py`). Needs `scripts/run_vision.sh` running.
+
+| Command | What it measures | Writes |
+|---|---|---|
+| `cameras --check` | how many ChArUco corners each camera sees (no motion) | nothing |
+| `cameras [--dry]` | the robot aims the wrist camera at the board and orbits it; wrist intrinsics, flange → wrist camera, D455 → base through the board | `hand_eye_env.json`, `hand_eye_wrist.json`, `calibration_charuco.json`, `data/calibration/<stamp>/` |
+| `cameras --solve DIR [--apply]` | solve a saved run again, offline | as above with `--apply` |
+| `survey contact V A B` | three touches of one dot (centre, then each open fingertip): tool length and fingertip offset | `workcell_survey.json` |
+| `survey points / table / keepout NAMES` | saved positions (Drag on → move by hand → Save position) as surface points, the table height, a keep-out cylinder | `workcell_survey.json` (`table --apply`: `workcell.json`) |
+| `table [--block-top]` | the table (or cube top) height, lowering the fingertips step by step | `workcell.json` |
+| `colors` | the HSV masks of each colour in the env camera | `data/captures/tune_*.jpg` |
+
+Every result passes gates before it replaces the active one (the board must come out flat on the
+table, reprojection errors, the tape-measured distances in `config/perception.yaml`), and the
+replaced file is kept as `<name>.<stamp>.old.json`. Measured limits (tool length, reach radius,
+keep-out zones) go into `config/robot.yaml`.
+
 ## Explore mode — Astra learns the cell by itself
 
 ```sh
 scripts/run_vision.sh                          # terminal 1: cameras + depth + dashboard
-.venv/bin/python scripts/teach_table.py        # once: touch the metal table with the fingertips
-scripts/run_calibration.sh                     # robot calibrates the D455 by itself (10 %, ~3 min)
+scripts/calibrate.sh cameras                   # after moving a camera: both cameras from the ChArUco board
 scripts/run_explore.sh                         # terminal 2: Astra (config/explore.yaml)
-scripts/run_explore.sh --recalibrate           # after moving the D455
 ```
 
-- **Tools:** primitives, look (with zoom), find_objects, self-calibration (`record_calibration_point`, `solve_calibration`), skills (its own file `data/memory/skills_explore.json`, no seeds), notes (`data/memory/astra_notes.jsonl`, fed into the next run).
+- **Tools:** primitives, look (with zoom), find_objects, knowledge (concepts, hypotheses, observations), skills (its own file `data/memory/skills_explore.json`, no seeds), notes (`data/memory/astra_notes.jsonl`, fed into the next run).
 - **Enforced in code:** speed ≤ `agent.yaml max_speed`; fingertip/flange above the taught table along the whole path (controller FK every 2° for joint moves; MovL near the table); the D455 must see the red tape on the gripper after every move, otherwise the move is undone; the gripper closes to 50 % at most; controller collision detection is enabled.
 - **Frames:** the controller's active tool (Tool 1 here, about 125 mm off the flange) is measured from `PositiveSolution` before every move, so fingertip poses are relative to the real flange.
-- **Calibration** is only valid for the day it was made: an env calibration from another day is set aside automatically. `run_calibration.sh` visits 12 poses (±60 mm, tilts ≤ 20°) and reports leave-one-out accuracy. Unreachable poses are refused by a controller IK check instead of raising an alarm.
+- **Calibration** is operator infrastructure (see **Calibration** below), not an Astra tool: it stays in use until the operator calibrates again, and preflight refuses to start without one.
 - **Episodes and learning:** `run_explore.sh --episodes N` runs N attempts. After each attempt Astra reviews the log with memory tools only and records the outcome in `data/episodes/index.jsonl`. It also saves or revises skills (a new version keeps the old one and its success/failure counts in `history`) and writes notes. `run_explore.sh --review N|ID` reviews earlier episodes without the robot.
 - **Approach zone:** while the fingertip is below table + 120 mm, each Cartesian move is ≤ 25 mm at 3 %. A move that stalls counts as contact: the robot stops, backs off 15 mm and reports the contact Z. `open_gripper` opens to 80 % in explore mode.

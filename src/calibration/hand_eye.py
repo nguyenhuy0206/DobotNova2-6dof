@@ -1,0 +1,164 @@
+"""Hand-eye calibration: where a camera is relative to the robot.
+
+    hand_eye                 camera on the flange, a board fixed in the cell: T_flange_cam and
+                             T_base_board from many (flange pose, board corners) views
+    env_from_board           a fixed camera that sees the same board: T_base_env through the board
+    solve_with_marker_offset a fixed camera that sees a marker on the gripper (legacy method)
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import cv2
+import numpy as np
+
+from calibration.board import BoardSpec, Detection, board_pose, camera_matrix, object_points
+from calibration.geometry import inv, nearest_rotation, solve_rigid_transform, to_rvec_t, transform
+
+@dataclass
+class HandEyeResult:
+    T_flange_cam: np.ndarray
+    T_base_board: np.ndarray
+    reproj_px: float                      # RMS over all corners of all views (after refinement)
+    per_view_px: list[float] = field(default_factory=list)
+    views: int = 0
+
+def _project_all(params, T_base_flange, dets, spec, K, dist):
+    T_flange_cam, T_base_board = transform(params[:3], params[3:6]), transform(params[6:9], params[9:12])
+    T_cam_flange = inv(T_flange_cam)
+    out = []
+    for Tbf, d in zip(T_base_flange, dets):
+        T_cam_board = T_cam_flange @ inv(Tbf) @ T_base_board
+        r, t = to_rvec_t(T_cam_board)[:3], T_cam_board[:3, 3]
+        proj, _ = cv2.projectPoints(object_points(spec, d.ids), r, t, K, dist)
+        out.append(proj.reshape(-1, 2) - d.corners)
+    return out
+
+def hand_eye_linear(T_base_flange: list[np.ndarray], T_cam_board: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Closed form for  T_base_flange_i · X · T_cam_board_i = Z  (X = T_flange_cam, Z = T_base_board),
+    after Li et al. 2010: rotations from the null space of a Kronecker system, then translations by
+    linear least squares. Needs >= 3 views with rotations about different axes."""
+    rows = [np.hstack([np.kron(Tc[:3, :3].T, Tb[:3, :3]), -np.eye(9)]) for Tb, Tc in zip(T_base_flange, T_cam_board)]
+    v = np.linalg.svd(np.vstack(rows))[2][-1]
+    RX, RZ = v[:9].reshape(3, 3, order="F"), v[9:].reshape(3, 3, order="F")
+    s = np.cbrt(np.linalg.det(RX))                 # null vector has arbitrary scale and sign
+    RX, RZ = nearest_rotation(RX / s), nearest_rotation(RZ / s)
+    A = np.vstack([np.hstack([Tb[:3, :3], -np.eye(3)]) for Tb in T_base_flange])
+    b = np.concatenate([-Tb[:3, 3] - Tb[:3, :3] @ RX @ Tc[:3, 3] for Tb, Tc in zip(T_base_flange, T_cam_board)])
+    t = np.linalg.lstsq(A, b, rcond=None)[0]
+    X, Z = np.eye(4), np.eye(4)
+    X[:3, :3], X[:3, 3], Z[:3, :3], Z[:3, 3] = RX, t[:3], RZ, t[3:]
+    return X, Z
+
+def hand_eye(T_base_flange: list[np.ndarray], dets: list[Detection], spec: BoardSpec, K, dist,
+             iterations: int = 30) -> HandEyeResult:
+    """Board fixed in the cell, camera on the flange. Closed form (hand_eye_linear) from the
+    per-view board poses, then Levenberg–Marquardt on the reprojection error of every corner of
+    every view — the PnP poses alone are noisy in rotation for a small board."""
+    if len(dets) < 3:
+        raise ValueError("need >= 3 views")
+    K, dist = camera_matrix(K), np.asarray(dist, np.float64).ravel()
+    T_cam_board = [board_pose(d, spec, K, dist)[0] for d in dets]
+    X, Z = hand_eye_linear(T_base_flange, T_cam_board)
+
+    x = np.r_[to_rvec_t(X), to_rvec_t(Z)]
+
+    def residual(p):
+        return np.concatenate([r.ravel() for r in _project_all(p, T_base_flange, dets, spec, K, dist)])
+
+    r, lam = residual(x), 1e-3
+    for _ in range(iterations):
+        J = np.empty((r.size, 12))
+        for k in range(12):
+            dp = np.zeros(12)
+            dp[k] = 1e-6
+            J[:, k] = (residual(x + dp) - r) / 1e-6
+        A, g = J.T @ J, J.T @ r
+        while True:
+            step = np.linalg.solve(A + lam * np.diag(np.diag(A) + 1e-12), -g)
+            r_new = residual(x + step)
+            if r_new @ r_new < r @ r:
+                x, r, lam = x + step, r_new, max(lam / 10, 1e-9)
+                break
+            lam *= 10
+            if lam > 1e8:
+                break
+        if lam > 1e8 or np.linalg.norm(step) < 1e-10:
+            break
+    per = [float(np.sqrt((e ** 2).sum(1).mean())) for e in _project_all(x, T_base_flange, dets, spec, K, dist)]
+    return HandEyeResult(transform(x[:3], x[3:6]), transform(x[6:9], x[9:12]), float(np.sqrt((r ** 2).sum() / (r.size / 2))),
+                         per, len(dets))
+
+def env_from_board(T_base_board: np.ndarray, T_env_board: np.ndarray) -> np.ndarray:
+    """T_base_env."""
+    return T_base_board @ inv(T_env_board)
+
+def depth_check_mm(det: Detection, spec: BoardSpec, T_cam_board: np.ndarray, depth_m: np.ndarray) -> float | None:
+    """Median (depth camera z − board-pose z) over the detected corners, mm. Tells whether the
+    board pose (from the image) and the depth image agree on the distance."""
+    if depth_m is None:
+        return None
+    pts = object_points(spec, det.ids) @ T_cam_board[:3, :3].T + T_cam_board[:3, 3]
+    diffs = []
+    for (u, v), p in zip(det.corners, pts):
+        ui, vi = int(round(u)), int(round(v))
+        if 0 <= vi < depth_m.shape[0] and 0 <= ui < depth_m.shape[1] and depth_m[vi, ui] > 0:
+            diffs.append(depth_m[vi, ui] - p[2])
+    return round(float(np.median(diffs)) * 1000, 1) if diffs else None
+
+def solve_with_marker_offset(camera_pts_m, tcp_poses, initial_offset_mm=None,
+                             iterations: int = 20) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]:
+    """Calibrate when the marker's exact place on the gripper is unknown.
+
+    Model, for every recorded point i (metres):
+        R @ c_i + t  =  p_i + R_i @ o
+    c_i = marker seen by the camera, (R_i, p_i) = robot TCP pose, o = marker in
+    the tool frame, (R, t) = camera -> base. Solved directly: one linear least
+    squares with R relaxed to any 3x3 matrix, R snapped to the nearest rotation,
+    then (t, o) re-solved and refined. Needs >= 5 points with varied tool
+    rotations, otherwise ``o`` and ``t`` cannot be told apart.
+    ``initial_offset_mm`` is accepted for API compatibility and ignored.
+
+    Returns (T, offset_mm, rms_mm, per_point_error_mm).
+    """
+    from perception.transforms import pose_to_matrix
+
+    cam = np.asarray(camera_pts_m, float)
+    if len(cam) < 5:
+        raise ValueError("need >= 5 points")
+    poses = [pose_to_matrix(p) for p in tcp_poses]
+    Rs = [P[:3, :3] for P in poses]
+    ps = np.array([P[:3, 3] for P in poses])
+    I3 = np.eye(3)
+
+    # 1) linear: unknowns vec(M) (9, column-major), t (3), o (3)
+    A = np.vstack([np.hstack([np.kron(c, I3), I3, -R]) for c, R in zip(cam, Rs)])
+    x = np.linalg.lstsq(A, ps.reshape(-1), rcond=None)[0]
+    M = x[:9].reshape(3, 3, order="F")
+    U, _, Vt = np.linalg.svd(M)
+    R = U @ np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))]) @ Vt
+
+    def solve_t_o(R):
+        B = np.vstack([np.hstack([I3, -Ri]) for Ri in Rs])
+        rhs = (ps - cam @ R.T).reshape(-1)
+        y = np.linalg.lstsq(B, rhs, rcond=None)[0]
+        return y[:3], y[3:]
+
+    t, o = solve_t_o(R)
+    # 2) refine: Kabsch for (R, t) given o, then (t, o) given R
+    for _ in range(iterations):
+        base = ps + np.array([Ri @ o for Ri in Rs])
+        T, _ = solve_rigid_transform(cam, base * 1000.0)
+        R = T[:3, :3]
+        t_new, o_new = solve_t_o(R)
+        done = np.linalg.norm(o_new - o) < 1e-7
+        t, o = t_new, o_new
+        if done:
+            break
+
+    T = np.eye(4)
+    T[:3, :3], T[:3, 3] = R, t
+    base = ps + np.array([Ri @ o for Ri in Rs])
+    errors = np.linalg.norm((cam @ R.T + t) - base, axis=1) * 1000.0
+    rms = float(np.sqrt((errors ** 2).mean()))
+    return T, o * 1000.0, rms, errors
