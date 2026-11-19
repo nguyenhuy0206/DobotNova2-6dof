@@ -4,7 +4,7 @@
 * ``OpenCVCamera``    — any UVC webcam (or the D455's RGB on macOS when
                         librealsense cannot claim the device). Colour only.
 
-For a full device/bandwidth benchmark use ``scripts/camera_benchmark.py``.
+For a full device/bandwidth benchmark use ``scripts/dev/camera_benchmark.py``.
 """
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ class OpenCVCamera:
 def import_pyrealsense2():
     """Import pyrealsense2 from the repo's own build (third_party/librealsense/lib).
 
-    Built/installed by scripts/build_pyrealsense_mac.sh. ``PYREALSENSE2_DIR``
+    Built/installed by scripts/dev/build_pyrealsense_mac.sh. ``PYREALSENSE2_DIR``
     overrides the location; an already-importable pyrealsense2 (Linux pip
     wheel) is used as-is.
     """
@@ -86,7 +86,7 @@ def import_pyrealsense2():
         return pyrealsense2
     except ImportError as exc:
         raise RobotError("pyrealsense2 not found in third_party/librealsense/lib — "
-                         "run scripts/build_pyrealsense_mac.sh") from exc
+                         "run scripts/dev/build_pyrealsense_mac.sh") from exc
 
 
 class RealSenseCamera:

@@ -48,7 +48,7 @@ from actions import self_collision
 from common.errors import ContactError, RobotError, SafetyError, ValidationError
 from common.log import get_logger
 from common.types import Feedback
-from perception.transforms import interpolate_rotation, matrix_to_rpy_deg, pose_to_matrix, rotation_angle_deg
+from common.poses import interpolate_rotation, matrix_to_rpy_deg, pose_to_matrix, rotation_angle_deg
 
 log = get_logger(__name__)
 

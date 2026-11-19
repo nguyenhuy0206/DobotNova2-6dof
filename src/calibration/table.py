@@ -16,7 +16,7 @@ from typing import Callable
 
 from calibration.workcell import load_workcell, save_block_top, save_table_height
 from common.errors import RobotError
-from perception.transforms import pose_to_matrix
+from common.poses import pose_to_matrix
 
 SPEED = 5
 MAX_DOWN_MM = 300

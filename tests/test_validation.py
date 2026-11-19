@@ -55,7 +55,7 @@ def test_floor_is_checked_on_the_lower_open_fingertip():
     from types import SimpleNamespace
 
     from actions.primitives import PrimitiveSkills
-    from perception.transforms import pose_to_matrix
+    from common.poses import pose_to_matrix
     me = SimpleNamespace(finger_half_gap_mm=31.6)
     down = pose_to_matrix([0, 0, 0, 180, 0, 0])[:3, :3]
     assert PrimitiveSkills._lowest_tip(me, [0, 0, 50], down)[2] == pytest.approx(50)

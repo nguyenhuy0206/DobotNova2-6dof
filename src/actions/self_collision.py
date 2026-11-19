@@ -5,10 +5,7 @@ The controller's IK only says whether a pose is reachable; it happily plans a pa
 the arm until the gripper hits the elbow (17 Nov: auto_calibrate, tilted pose above the box ->
 controller alarm, gripper against the elbow). This module checks that BEFORE a move is sent.
 
-Kinematics: standard DH, fitted (17 Nov) to 564 (joints, flange pose) pairs measured by this
-controller during the episodes: flange position error median 0.04 mm / max 0.09 mm, orientation
-median 0.004° / max 0.017°. The lengths come out at the nominal Nova 2 values (d1 223.4,
-a2 280, a3 225, d4 117.5, d5 120, d6 88 mm).
+Kinematics: drivers.nova2_kinematics (DH fitted to this controller, 0.04 mm).
 
 Clearance = shortest distance between the gripper axis (flange -> fingertip) and the axis of
 the shoulder->elbow and elbow->wrist links. It is a coarse measure (the real gripper is wider on
@@ -41,40 +38,8 @@ import math
 import numpy as np
 
 from common.errors import ValidationError
-from perception.transforms import matrix_to_rpy_deg, pose_to_matrix
-
-# fitted DH (see module doc): d1, a2, a3, d4, d5, d6 (mm), joint offsets (rad), joint signs,
-# and the constant rotation from the DH end frame to the controller's flange frame
-_D1, _A2, _A3, _D4, _D5, _D6 = 223.41, 280.01, 225.01, -117.53, 119.98, -88.02
-_OFFSET = np.radians([180.0, 90.0, 0.0, 90.0, 0.0, 168.96])
-_SIGN = np.array([1, -1, -1, -1, 1, -1], float)
-_ALPHA = np.radians([90, 0, 0, 90, -90, 0])
-_A = [0, _A2, _A3, 0, 0, 0]
-_D = [_D1, 0, 0, _D4, _D5, _D6]
-_FLANGE = np.array([[0.9815, 0.1915, 0.0], [0.1915, -0.9815, 0.0], [0.0, 0.0, -1.0]])
-
-
-def frames(joints_deg) -> tuple[np.ndarray, list[np.ndarray]]:
-    """Flange pose (4x4, controller convention) and the origins of the 6 DH frames."""
-    T = np.eye(4)
-    pts = []
-    for i, q in enumerate(np.radians(np.asarray(joints_deg, float))):
-        th = _SIGN[i] * q + _OFFSET[i]
-        ct, st, ca, sa = math.cos(th), math.sin(th), math.cos(_ALPHA[i]), math.sin(_ALPHA[i])
-        T = T @ np.array([[ct, -st * ca, st * sa, _A[i] * ct],
-                          [st, ct * ca, -ct * sa, _A[i] * st],
-                          [0, sa, ca, _D[i]],
-                          [0, 0, 0, 1]])
-        pts.append(T[:3, 3].copy())
-    F = T.copy()
-    F[:3, :3] = T[:3, :3] @ _FLANGE
-    return F, pts
-
-
-def flange_pose(joints_deg) -> list[float]:
-    F, _ = frames(joints_deg)
-    return [*map(float, F[:3, 3]), *matrix_to_rpy_deg(F[:3, :3])]
-
+from drivers.nova2_kinematics import flange_pose, frames, ik_near  # noqa: F401 (flange_pose re-exported)
+from common.poses import matrix_to_rpy_deg, pose_to_matrix
 
 def _seg_dist(p1, q1, p2, q2) -> float:
     d1, d2, r = q1 - p1, q2 - p2, p1 - p2
@@ -86,7 +51,6 @@ def _seg_dist(p1, q1, p2, q2) -> float:
     s = min(1.0, max(0.0, (b * t - c) / a)) if a > 1e-9 else 0.0
     return float(np.linalg.norm(p1 + d1 * s - (p2 + d2 * t)))
 
-
 def clearance(joints_deg, tool_length_mm: float) -> tuple[float, str]:
     """(mm, link): closest approach of the gripper axis to the upper arm / forearm."""
     F, p = frames(joints_deg)
@@ -96,16 +60,13 @@ def clearance(joints_deg, tool_length_mm: float) -> tuple[float, str]:
     fore = _seg_dist(flange, tip, p[1], p[2])
     return (upper, "upper arm / elbow") if upper <= fore else (fore, "forearm / elbow")
 
-
 def wrist_clearance(joints_deg) -> float:
     """mm between the wrist links and the upper arm (shrinks as the elbow folds)."""
     F, p = frames(joints_deg)
     wrist = ((p[2], p[3]), (p[3], p[4]), (p[4], F[:3, 3]))
     return min(_seg_dist(a, b, p[0], p[1]) for a, b in wrist)
 
-
 WRIST_FOLD_DEG = -100.0          # J3 at or below this = elbow folded deep enough for the wrist check
-
 
 def _measure(q, tool_length_mm: float, fold_deg: float = WRIST_FOLD_DEG) -> dict:
     mm, link = clearance(q, tool_length_mm)
@@ -114,40 +75,9 @@ def _measure(q, tool_length_mm: float, fold_deg: float = WRIST_FOLD_DEG) -> dict
             "wrist": (w, f"the elbow folds to J3 {q[2]:.0f}° and the wrist comes within {w:.0f} mm of the "
                          "upper arm")}
 
-
 def _floors(q, tool_length_mm: float, limits: dict) -> dict:
     now = _measure(q, tool_length_mm)
     return {k: min(lim, now[k][0] - 1) for k, lim in limits.items() if lim > 0}
-
-
-def ik_near(target: list[float], joints_deg, iters: int = 40) -> list[float] | None:
-    """Joints for a flange pose, found from `joints_deg` (the branch a straight-line move
-    stays on). Damped least squares on position (mm) + orientation (rad·100)."""
-    q = np.asarray(joints_deg, float).copy()
-    Tt = np.eye(4)
-    Tt[:3, :3] = pose_to_matrix(target)[:3, :3]        # rotation only: pose_to_matrix works in metres
-    Tt[:3, 3] = target[:3]
-    for _ in range(iters):
-        F, _ = frames(q)
-        e = _pose_error(F, Tt)
-        if np.linalg.norm(e[:3]) < 0.05 and np.linalg.norm(e[3:]) < 0.005:
-            return list(map(float, q))
-        Jm = np.empty((6, 6))
-        for k in range(6):
-            dq = np.zeros(6)
-            dq[k] = 1e-3
-            Jm[:, k] = (_pose_error(frames(q + dq)[0], Tt) - e) / 1e-3
-        q = q - np.linalg.solve(Jm.T @ Jm + 1e-4 * np.eye(6), Jm.T @ e)
-    F, _ = frames(q)
-    e = _pose_error(F, Tt)
-    return list(map(float, q)) if np.linalg.norm(e[:3]) < 0.5 and np.linalg.norm(e[3:]) < 0.05 else None
-
-
-def _pose_error(F: np.ndarray, Tt: np.ndarray) -> np.ndarray:
-    Rerr = Tt[:3, :3].T @ F[:3, :3]
-    w = 0.5 * np.array([Rerr[2, 1] - Rerr[1, 2], Rerr[0, 2] - Rerr[2, 0], Rerr[1, 0] - Rerr[0, 1]])
-    return np.r_[F[:3, 3] - Tt[:3, 3], 100 * w]
-
 
 def check_joint_path(start, end, tool_length_mm: float, min_mm: float, step_deg: float = 2.0,
                      wrist_min_mm: float = 0.0) -> None:
@@ -160,12 +90,11 @@ def check_joint_path(start, end, tool_length_mm: float, min_mm: float, step_deg:
         q = [s + (e - s) * k / n for s, e in zip(start, end)]
         _check(q, tool_length_mm, floors, limits, "target" if k == n else f"joint path {k * 100 // n}%")
 
-
 def check_linear_path(start_joints, start_flange: list[float], target_flange: list[float],
                       tool_length_mm: float, min_mm: float, step_mm: float = 10.0, step_deg: float = 3.0,
                       wrist_min_mm: float = 0.0) -> None:
     """Straight-line motion (MovL): follow the line with IK from the current joints."""
-    from perception.transforms import interpolate_rotation
+    from common.poses import interpolate_rotation
     p0, p1 = np.array(start_flange[:3]), np.array(target_flange[:3])
     R0, R1 = pose_to_matrix(start_flange)[:3, :3], pose_to_matrix(target_flange)[:3, :3]
     ang = math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(R0.T @ R1) - 1) / 2))))
@@ -181,7 +110,6 @@ def check_linear_path(start_joints, start_flange: list[float], target_flange: li
             return            # the controller's own IK / reachability check reports this case
         q = nxt
         _check(q, tool_length_mm, floors, limits, "target" if k == n else f"path {k * 100 // n}%")
-
 
 def _check(q, tool_length_mm: float, floors: dict, limits: dict, where: str) -> None:
     now = _measure(q, tool_length_mm)

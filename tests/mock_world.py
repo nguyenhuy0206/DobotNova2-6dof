@@ -55,7 +55,7 @@ class FakeScene:
             self.blocks[self.held] = [tip[0], tip[1], tip[2] + 8]
 
     def find(self, color, camera="env", frame=None):
-        from perception.transforms import pose_to_matrix
+        from common.poses import pose_to_matrix
         self._update()
         x, y, z = self.blocks[color]
         if camera == "env":

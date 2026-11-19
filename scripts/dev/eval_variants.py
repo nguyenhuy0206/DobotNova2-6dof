@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reproducible V0–V3 comparison in the MOCK world (simulated robot + scripted Astra).
 
-    .venv/bin/python scripts/eval_variants.py            both plans, all variants
-    .venv/bin/python scripts/eval_variants.py --md data/logs/eval_variants.md
+    .venv/bin/python scripts/dev/eval_variants.py            both plans, all variants
+    .venv/bin/python scripts/dev/eval_variants.py --md data/logs/eval_variants.md
 
 Same task, same actions, same robot limits for every variant; only the harness
 differs. Tokens are ESTIMATES of request size (chars/4 + per-image cost) because no
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import _bootstrap  # noqa: F401
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 from mock_world import run_variant  # noqa: E402
 
 COLS = ["plan", "variant", "blocks_on_table", "model_calls", "est_total_tokens", "max_context_tokens",

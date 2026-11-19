@@ -1,6 +1,7 @@
 import numpy as np
 
-from perception.transforms import HandEye, deproject_pixel, pose_to_matrix
+from common.poses import pose_to_matrix
+from perception.transforms import HandEye, deproject_pixel
 
 
 def test_deproject_center():

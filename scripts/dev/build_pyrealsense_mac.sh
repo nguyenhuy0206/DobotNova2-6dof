@@ -6,15 +6,15 @@
 #     build/   cmake build tree
 #     lib/     pyrealsense2*.so + librealsense2*.dylib   <- what the code imports
 #
-#   scripts/build_pyrealsense_mac.sh                    clone + build (~10–20 min on Apple Silicon)
-#   scripts/build_pyrealsense_mac.sh --reuse <Release>  install an existing build's Release/ folder
+#   scripts/dev/build_pyrealsense_mac.sh                    clone + build (~10–20 min on Apple Silicon)
+#   scripts/dev/build_pyrealsense_mac.sh --reuse <Release>  install an existing build's Release/ folder
 #                                                       (e.g. ~/src/librealsense-v2.59.1/build/Release)
 #
 # Why from source: the pip wheel (pyrealsense2-macosx 2.56.5) segfaults on macOS 15.
 # src/drivers/camera.py imports from third_party/librealsense/lib directly —
 # no .pth link in .venv (macOS keeps hiding those and Python 3.13 skips hidden .pth files).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
 VERSION=v2.59.1
 PY="${PY:-/opt/homebrew/bin/python3.13}"

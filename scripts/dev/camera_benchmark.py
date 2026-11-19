@@ -42,8 +42,8 @@ import os
 import sys
 import time
 
-# pyrealsense2 is built into third_party/librealsense/lib (scripts/build_pyrealsense_mac.sh).
-_RS_LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "third_party", "librealsense", "lib")
+# pyrealsense2 is built into third_party/librealsense/lib (scripts/dev/build_pyrealsense_mac.sh).
+_RS_LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "third_party", "librealsense", "lib")
 if os.path.isdir(_RS_LIB):
     sys.path.insert(0, os.path.abspath(_RS_LIB))
 try:

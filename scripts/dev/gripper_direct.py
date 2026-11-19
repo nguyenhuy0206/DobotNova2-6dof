@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Drive the PGC gripper directly over a USB–RS485 adapter (no Nova 2 controller).
 
-    python scripts/gripper_direct.py status
-    python scripts/gripper_direct.py init            # then waits until initialized
-    python scripts/gripper_direct.py open
-    python scripts/gripper_direct.py close --force 30 # close until object / fully closed
-    python scripts/gripper_direct.py move 500
-    python scripts/gripper_direct.py demo            # init (if needed) -> open -> close -> open
+    python scripts/dev/gripper_direct.py status
+    python scripts/dev/gripper_direct.py init            # then waits until initialized
+    python scripts/dev/gripper_direct.py open
+    python scripts/dev/gripper_direct.py close --force 30 # close until object / fully closed
+    python scripts/dev/gripper_direct.py move 500
+    python scripts/dev/gripper_direct.py demo            # init (if needed) -> open -> close -> open
 
 Port is auto-detected (/dev/cu.usbserial-*) unless --port is given.
 """

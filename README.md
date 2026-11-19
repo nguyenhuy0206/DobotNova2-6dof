@@ -13,22 +13,34 @@ and confirmed the grip with both cameras. The video is captioned with Astra's de
 ## Layout
 
 ```
-config/        robot.yaml (IP, speed, workspace limits, gripper) · agent.yaml (model, tools, execution mode)
+config/          robot.yaml (IP, speed, workspace, gripper) · agent.yaml (model, tools) · explore.yaml (task, harness)
+                 perception.yaml (colours, ChArUco board, tape-measured cell)
 src/
-  drivers/     nova2.py (TCP/IP 29999/30003/30004) · gripper.py (PGC over RS485) · camera.py (RealSense/OpenCV)
-  actions/     validation.py (limits + safety) · robot_actions.py · executor.py (dry_run/confirm/live) · registry.py (tool catalogue)
-  agent/       astra_client.py · tools.py (→ function tools) · harness.py (model ⇄ tool loop)
-  perception/  detection.py (HSV colour blobs) · transforms.py (pixel → camera → base, hand-eye)
-  calibration/ board · hand_eye · cameras (ChArUco, both cameras) · survey (touches) · table · workcell · files
-  memory/      store.py (positions, episodes JSONL) · skills.py (skill library + retrieval)
-  common/      config, errors, types, paths, logging
-ui/            app.py (HTTP router) · skills_api.py · camera_api.py · index.html · debug_skills.js/.css · debug_cameras.js
-scripts/       run_vision.sh · run_ui.sh · run_agent.py · astra_smoke_test.py · gripper_cycle.py · camera_benchmark.py · run_camera.sh · build_pyrealsense_mac.sh
-tests/         sim_robot.py (fake Nova 2) · protocol / validation / safety / executor / harness / transforms tests
-data/          captures/ logs/ episodes/ memory/   (git-ignored contents)
+  drivers/       nova2.py (TCP/IP 29999/30003/30004) · nova2_kinematics.py (DH model, 0.05 mm) · gripper.py (PGC, RS485)
+                 camera*.py · realsense_helper.py
+  actions/       primitives.py (every motion + its guards) · self_collision.py (arm vs itself)
+                 validation.py · executor.py (dry_run/confirm/live) · registry.py (tool catalogue)
+                 skill_runner.py · local_steps.py · astra_code.py (Astra's own routines) · robot_actions.py · search.py
+  perception/    detection.py (HSV blobs) · scene.py (look / find_objects) · transforms.py · robot_view.py (view guard)
+  calibration/   board · hand_eye · cameras (ChArUco, both cameras) · survey (touches) · table · workcell · files
+  memory/        knowledge.py (observations, concepts, hypotheses) · skills.py · store.py · notes.py · hypotheses.py (legacy)
+  agent/         harness.py (model ⇄ tool loop) + context · chunking · events · repeats · metrics · vision · tools · toolkit
+    explore/     explore mode: config · prompt · tools · diagnosis · learning · session
+    astra_skills/  routines Astra wrote (versioned in _history/)
+  common/        config, errors, types, poses (pose ⇄ matrix), paths (+ archive), logging
+ui/              app.py (HTTP router) · skills_api.py · camera_api.py · index.html · debug_*.js/.css
+scripts/         run_vision.sh · run_explore.sh · calibrate.sh · episode_report.py · run_agent.py · run_ui.sh · run_depth.sh
+  dev/           hardware checks and benchmarks: gripper_direct · gripper_cycle · camera_benchmark · run_camera ·
+                 astra_smoke_test · eval_variants · build_pyrealsense_mac
+tests/           sim_robot.py (fake Nova 2) · mock_world.py · one test file per module family
+data/            memory/ (files in use only) · archive/<date>/ (anything replaced) · episodes/ · calibration/ · logs/ · captures/
+                 (git-ignored contents)
 ```
 
-Dependency direction: `ui`, `scripts`, `agent` → `actions` → `drivers`, `memory` → `common`.
+Dependency direction: `ui`, `scripts` → `agent` → `actions`, `perception`, `memory` → `drivers` → `common`.
+`calibration/` sits beside them: its stored results are read by `actions` (`workcell`) and by
+`perception.scene` (`hand_eye_env.json`); its procedures (`cameras`, `table`) drive the robot through `actions` and are only
+called from `scripts/calibrate.py`.
 Every safety rule lives in `actions/`, so the UI and the agent are held to the same limits.
 
 ## Setup
@@ -37,7 +49,7 @@ Every safety rule lives in `actions/`, so the UI and the agent are held to the s
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -e .
 cp .env.example .env        # put the API key in it (gpt6-key=...); .env is git-ignored
 # RealSense: builds librealsense into third_party/librealsense (git-ignored)
-scripts/build_pyrealsense_mac.sh           # or: --reuse <existing build/Release>
+scripts/dev/build_pyrealsense_mac.sh           # or: --reuse <existing build/Release>
 ```
 
 Network: controller in TCP/IP secondary-development mode; Mac Ethernet
@@ -49,11 +61,11 @@ or `NOVA2_IP=…`).
 ```sh
 scripts/run_vision.sh                          # ALL-IN-ONE: cameras check + depth helper + dashboard (re-run to restart)
 scripts/run_ui.sh                              # dashboard only at http://127.0.0.1:8765
-.venv/bin/python scripts/astra_smoke_test.py   # check the model answers (no tools)
+.venv/bin/python scripts/dev/astra_smoke_test.py   # check the model answers (no tools)
 .venv/bin/python scripts/run_agent.py "open the gripper then jog J1 +5°"            # dry_run
 .venv/bin/python scripts/run_agent.py --mode confirm "…"                             # asks before each motion
-.venv/bin/python scripts/gripper_cycle.py --cycles 5
-scripts/run_camera.sh                          # D455 colour + depth preview
+.venv/bin/python scripts/dev/gripper_cycle.py --cycles 5
+scripts/dev/run_camera.sh                          # D455 colour + depth preview
 .venv/bin/python -m pytest                     # tests, no hardware needed
 ```
 
@@ -168,7 +180,7 @@ V1 bounded context · V2 chunks · V3 both (default). Safety is identical in all
 
 ```bash
 .venv/bin/python scripts/episode_report.py --last 10      # real episodes: calls, billed tokens, images, grasps
-.venv/bin/python scripts/eval_variants.py                 # mock world: V0–V3 side by side (estimated tokens)
+.venv/bin/python scripts/dev/eval_variants.py                 # mock world: V0–V3 side by side (estimated tokens)
 scripts/run_explore.sh --skills | --promote NAME | --rollback NAME VERSION
 ```
 
@@ -196,7 +208,7 @@ the result files: `src/calibration/files.py`). Needs `scripts/run_vision.sh` run
 
 Every result passes gates before it replaces the active one (the board must come out flat on the
 table, reprojection errors, the tape-measured distances in `config/perception.yaml`), and the
-replaced file is kept as `<name>.<stamp>.old.json`. Measured limits (tool length, reach radius,
+replaced file goes to `data/archive/<date>/`. Measured limits (tool length, reach radius,
 keep-out zones) go into `config/robot.yaml`.
 
 ## Explore mode — Astra learns the cell by itself

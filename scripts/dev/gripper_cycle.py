@@ -5,9 +5,9 @@ Assumes the gripper is already initialized (register 0x0100 = 0xA5).
 Defaults come from config/robot.yaml (gripper section).
 
 Usage:
-    python scripts/gripper_cycle.py                     # cycle forever, 3 s interval
-    python scripts/gripper_cycle.py --interval 2 --cycles 10
-    python scripts/gripper_cycle.py --init              # re-initialize first
+    python scripts/dev/gripper_cycle.py                     # cycle forever, 3 s interval
+    python scripts/dev/gripper_cycle.py --interval 2 --cycles 10
+    python scripts/dev/gripper_cycle.py --init              # re-initialize first
 
 Stop with Ctrl+C — the Modbus master is closed on exit.
 """

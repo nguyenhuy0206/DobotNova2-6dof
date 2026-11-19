@@ -6,11 +6,11 @@
     data/memory/workcell.json            table height (and cube-top height) the motion guards use
     data/memory/workcell_survey.json     hand-guided touch survey: gripper contact model, points
     data/calibration/<stamp>/            each ChArUco run: images, views.json, report.json
-A file that gets replaced is kept next to it as <name>.<stamp>.old.json.
+A file that gets replaced goes to data/archive/<date>/ (common.paths.archive).
 """
 from __future__ import annotations
 
-from common.paths import DATA_DIR, MEMORY_DIR
+from common.paths import DATA_DIR, MEMORY_DIR, archive
 
 SESSIONS_DIR = DATA_DIR / "calibration"
 CALIBRATION_FILE = MEMORY_DIR / "calibration_charuco.json"
@@ -20,6 +20,5 @@ SURVEY_FILE = MEMORY_DIR / "workcell_survey.json"
 
 
 def backup(path, stamp: str) -> None:
-    """Keep the file being replaced as <name>.<stamp>.old.json."""
-    if path.exists():
-        path.rename(path.with_name(f"{path.stem}.{stamp}.old.json"))
+    """Move the file being replaced to data/archive/<date>/<name>.<stamp>.json."""
+    archive(path, tag=stamp)

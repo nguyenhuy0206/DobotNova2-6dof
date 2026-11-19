@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from calibration import board, geometry, hand_eye
-from perception.transforms import pose_to_matrix
+from common.poses import pose_to_matrix
 
 SPEC = board.BoardSpec()                       # the printed board: 7x5, 20.85 mm squares, 15 mm markers
 K = np.array([[520.0, 0, 322], [0, 518.0, 238], [0, 0, 1]])
@@ -88,7 +88,7 @@ def test_average_poses_is_a_rotation():
 # --- the procedure (offline part) ---------------------------------------------------------------
 
 from calibration import cameras as cc  # noqa: E402
-from perception.transforms import matrix_to_rpy_deg  # noqa: E402
+from common.poses import matrix_to_rpy_deg  # noqa: E402
 
 
 def _session(env_pose=T_BASE_ENV):
@@ -148,7 +148,7 @@ def test_save_writes_only_the_accepted_parts(tmp_path):
     env_file = tmp_path / "hand_eye_env.json"
     env_file.write_text('{"T": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]], "eye_in_hand": false}')
     cc.save(rep, env_file, "x", result_file=tmp_path / "r.json", wrist_file=tmp_path / "w.json")
-    assert env_file.exists() and not (tmp_path / "hand_eye_env.x.old.json").exists()   # env untouched
+    assert '"eye_in_hand": false' in env_file.read_text() and env_file.read_text().count("1,0,0,0") == 1  # untouched
     assert (tmp_path / "w.json").exists() and "T_flange_wrist" in (tmp_path / "r.json").read_text()
 
 
@@ -198,3 +198,16 @@ def test_enclosing_cylinder_covers_every_point_with_margin():
     c = survey.enclosing_cylinder(pts, margin_mm=40)
     assert c["xy"] == [50, 20] and c["radius_mm"] == round(np.hypot(50, 20) + 40)
     assert c["z_touched"] == [100.0, 150.0]
+
+
+def test_archive_moves_a_replaced_file_out_of_memory(tmp_path, monkeypatch):
+    from common import paths
+    monkeypatch.setattr(paths, "ARCHIVE_DIR", tmp_path / "archive")
+    f = tmp_path / "memory" / "hand_eye_env.json"
+    f.parent.mkdir()
+    f.write_text("{}")
+    first = paths.archive(f, tag="20261118-164219")
+    assert not f.exists() and first.name == "hand_eye_env.20261118-164219.json" and first.parent.parent == tmp_path / "archive"
+    f.write_text("{}")
+    assert paths.archive(f, tag="20261118-164219").name == "hand_eye_env.20261118-164219-1.json"   # never overwrites
+    assert paths.archive(f) is None                                                                   # nothing left to move

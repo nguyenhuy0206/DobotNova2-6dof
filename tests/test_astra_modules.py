@@ -184,7 +184,7 @@ def test_harness_attaches_look_image_and_saves_it(kit, tmp_path):
 def test_calibration_solves_unknown_marker_offset_and_flags_outlier():
     from calibration.geometry import outliers
     from calibration.hand_eye import solve_with_marker_offset
-    from perception.transforms import pose_to_matrix
+    from common.poses import pose_to_matrix
     rng = np.random.default_rng(1)
     true_offset = np.array([37.0, 67.0, 9.0])
     poses, cams = [], []

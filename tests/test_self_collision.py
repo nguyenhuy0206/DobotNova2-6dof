@@ -64,7 +64,7 @@ PLACE_ALARM = [30.26, 103.01, -120.5, 105.94, 270.01, -315.22]      # measured w
 
 
 def _flange(tip):
-    from perception.transforms import pose_to_matrix
+    from common.poses import pose_to_matrix
     import numpy as np
     R = pose_to_matrix(tip)[:3, :3]
     return [*map(float, np.array(tip[:3]) - R[:, 2] * 118), *tip[3:]]

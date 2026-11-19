@@ -23,13 +23,13 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from calibration.files import SURVEY_FILE
-from perception.transforms import pose_to_matrix
+from common.poses import pose_to_matrix
 
 Flange = tuple[np.ndarray, np.ndarray]          # (position mm, rotation 3x3)
 
 
 def flange_from_joints(joints_deg) -> Flange:
-    from actions.self_collision import flange_pose
+    from drivers.nova2_kinematics import flange_pose
     f = flange_pose(joints_deg)
     return np.array(f[:3], float), pose_to_matrix(f)[:3, :3]
 

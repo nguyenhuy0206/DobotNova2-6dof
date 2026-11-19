@@ -4,7 +4,7 @@
     2. wrist  the robot pivots the wrist camera around the board centre   -> views (flange pose, corners)
     3. solve  wrist intrinsics; hand-eye -> T_flange_wrist, T_base_board; T_base_env through the board
     4. check  quality gates + the tape-measured cell (config/perception.yaml calibration.measured)
-    5. save   only when every gate passes; the old files are kept as *.<stamp>.old.json
+    5. save   only when every gate passes; the replaced files go to data/archive/<date>/
 
 Everything captured is written to data/calibration/<stamp>/ (images + views.json) so a run can be
 solved again offline (solve_session) after a change to the solver or the board numbers.
@@ -29,7 +29,8 @@ from calibration.files import CALIBRATION_FILE, SESSIONS_DIR, WRIST_FILE, backup
 from calibration.geometry import average_poses, inv
 from calibration.hand_eye import HandEyeResult, depth_check_mm, env_from_board, hand_eye
 from common.errors import RobotError, SafetyError, ValidationError
-from perception.transforms import HandEye, matrix_to_rpy_deg, pose_to_matrix
+from common.poses import matrix_to_rpy_deg, pose_to_matrix
+from perception.transforms import HandEye
 
 
 # wrist views: rotation of the tool about its own X, Y, Z (deg) and change of distance to the

@@ -7,7 +7,7 @@ import pytest
 
 from actions.primitives import PrimitiveSkills
 from common.errors import SafetyError, ValidationError
-from perception.transforms import pose_to_matrix
+from common.poses import pose_to_matrix
 
 
 @pytest.fixture
@@ -175,7 +175,7 @@ def test_pure_lift_allowed_below_floor(table, sim):
 
 
 def test_unreachable_pose_refused_without_alarm(p, sim):
-    from perception.transforms import matrix_to_rpy_deg
+    from common.poses import matrix_to_rpy_deg
 
     assert matrix_to_rpy_deg(pose_to_matrix([0, 0, 0, 170, -20, 35])[:3, :3]) == pytest.approx([170, -20, 35])
     sim.fk = lambda j: list(sim.state["pose"])

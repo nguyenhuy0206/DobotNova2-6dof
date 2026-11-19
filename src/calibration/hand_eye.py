@@ -121,7 +121,7 @@ def solve_with_marker_offset(camera_pts_m, tcp_poses, initial_offset_mm=None,
 
     Returns (T, offset_mm, rms_mm, per_point_error_mm).
     """
-    from perception.transforms import pose_to_matrix
+    from common.poses import pose_to_matrix
 
     cam = np.asarray(camera_pts_m, float)
     if len(cam) < 5:

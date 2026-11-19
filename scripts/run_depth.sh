@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY="$(pwd)/.venv/bin/python"
-[[ -d third_party/librealsense/lib ]] || { echo "Build first: scripts/build_pyrealsense_mac.sh"; exit 1; }
+[[ -d third_party/librealsense/lib ]] || { echo "Build first: scripts/dev/build_pyrealsense_mac.sh"; exit 1; }
 
 echo ">> Releasing the D455 from macOS camera services (UI windows on its colour device will stop)"
 sudo killall VDCAssistant UVCAssistant 2>/dev/null || true
