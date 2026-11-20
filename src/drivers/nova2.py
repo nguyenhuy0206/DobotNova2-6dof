@@ -14,6 +14,7 @@ import socket
 import struct
 import time
 
+from common.log import get_logger
 from common.errors import RobotError
 from common.types import Feedback
 
@@ -90,6 +91,9 @@ def format_values(values: list[float], fmt: str = "g") -> str:
     return ",".join(one(value) for value in values)
 
 
+log = get_logger(__name__)
+
+
 class Nova2:
     """Thin, stateless wrapper: one short TCP connection per call."""
 
@@ -144,7 +148,25 @@ class Nova2:
     def clear_error(self) -> str:
         return self.dashboard("ClearError()")
 
+    # Stop commands tried in order (operator, 19 Nov): never ResetRobot() unless every one is refused.
+    # ResetRobot changed the controller's active tool once and preceded controller shutdowns; Stop()
+    # is not in this firmware (-10000).
+    stop_commands: tuple[str, ...] = ("Pause()",)
+
     def stop(self) -> str:
+        """Stop the motion. Falls back to ResetRobot() only if the controller refuses every stop
+        command: a move that cannot be stopped is worse."""
+        refused = []
+        for cmd in self.stop_commands:
+            try:
+                return self.dashboard(cmd)
+            except RobotError as exc:
+                refused.append(f"{cmd}: {exc}")
+        log.warning("every stop command refused (%s) — falling back to ResetRobot()", "; ".join(refused))
+        return self.dashboard("ResetRobot()")
+
+    def reset_robot(self) -> str:
+        """ResetRobot(): only when the operator asks for it explicitly."""
         return self.dashboard("ResetRobot()")
 
     def start_drag(self) -> str:
@@ -170,14 +192,29 @@ class Nova2:
         raw = self.dashboard(f"PositiveSolution({format_values(joints, '.4f')},{user},{tool})")
         return _braced_numbers(raw, 6, "PositiveSolution")
 
-    def inverse_solution(self, pose: list[float], user: int = 0, tool: int = 0) -> list[float]:
-        """Inverse kinematics on the controller: pose -> joints (deg)."""
-        try:
-            raw = self.dashboard(f"InverseSolution({format_values(pose, '.4f')},{user},{tool})")
-        except RobotError as exc:
-            from common.errors import ValidationError
-            raise ValidationError(f"pose not reachable (no inverse-kinematics solution): {exc}") from None
-        return _braced_numbers(raw, 6, "InverseSolution")
+    def inverse_solution(self, pose: list[float], user: int = 0, tool: int = 0,
+                         near: list[float] | None = None) -> list[float]:
+        """Inverse kinematics on the controller: pose -> joints (deg).
+
+        near: the joints to stay close to (the robot's current joints). Without it the controller
+        solves on its own default branch, which can differ from the branch the arm is on: it then
+        refuses poses a straight move from here reaches (19 Nov: a 20 mm lift refused 12× while
+        the 20 mm descent next to it was accepted). With it: IsJointNear=1, JointNear={…}
+        (TCP-IP V3 syntax); if that form is refused too, the plain form is asked as well, so the
+        check is never stricter than before.
+        """
+        base = f"InverseSolution({format_values(pose, '.4f')},{user},{tool}"
+        forms = ([f"{base},1,{{{format_values(near, '.4f')}}})"] if near is not None else []) + [f"{base})"]
+        refused = []
+        for cmd in forms:
+            try:
+                raw = self.dashboard(cmd)
+            except RobotError as exc:                    # the controller said no
+                refused.append(str(exc))
+                continue
+            return _braced_numbers(raw, 6, "InverseSolution")   # unreadable reply: RobotError (can't tell)
+        from common.errors import ValidationError
+        raise ValidationError("pose not reachable (no inverse-kinematics solution): " + " | ".join(refused))
 
     # -- motion commands (no validation here; see actions.validation) --
     def rel_joint_movj(self, deltas: list[float], speed: int) -> str:

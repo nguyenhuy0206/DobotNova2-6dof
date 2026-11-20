@@ -45,7 +45,7 @@ import numpy as np
 from actions import validation as v
 from actions.robot_actions import RobotActions
 from actions import self_collision
-from common.errors import ContactError, RobotError, SafetyError, ValidationError
+from common.errors import ContactError, MotionStopped, RobotError, SafetyError, ValidationError
 from common.log import get_logger
 from common.types import Feedback
 from common.poses import interpolate_rotation, matrix_to_rpy_deg, pose_to_matrix, rotation_angle_deg
@@ -231,7 +231,7 @@ class PrimitiveSkills:
     def _self_check_on(self, fb: Feedback) -> bool:
         """On when enabled AND the kinematic model reproduces the flange the controller reports
         now (within 5 mm): another robot, or a simulator, is never judged by the wrong model."""
-        if (self.m.self_clearance_mm <= 0 and self.m.wrist_clearance_mm <= 0) \
+        if (self.m.self_clearance_mm <= 0 and self.m.wrist_clearance_mm <= 0 and self.m.elbow_table_clearance_mm <= 0) \
                 or self.tool_offset_source != "controller FK":
             return False
         model = self_collision.flange_pose(fb["joints_deg"])[:3]
@@ -240,21 +240,26 @@ class PrimitiveSkills:
     def _self_check_joints(self, fb: Feedback, end: list[float]) -> None:
         if self._self_check_on(fb):
             self_collision.check_joint_path(fb["joints_deg"], end, self.tool_length_mm, self.m.self_clearance_mm,
-                                            wrist_min_mm=self.m.wrist_clearance_mm)
+                                            wrist_min_mm=self.m.wrist_clearance_mm, **self._elbow_args())
 
     def _self_check_linear(self, fb: Feedback, start: list[float], target: list[float]) -> None:
         if self._self_check_on(fb):
             self_collision.check_linear_path(fb["joints_deg"], start, target, self.tool_length_mm,
-                                             self.m.self_clearance_mm, wrist_min_mm=self.m.wrist_clearance_mm)
+                                             self.m.self_clearance_mm, wrist_min_mm=self.m.wrist_clearance_mm,
+                                             **self._elbow_args())
 
-    def _ik(self, flange_pose: list[float]) -> list[float] | None:
-        """Joints for a flange pose from the controller's IK. Raises ValidationError
-        when unreachable (instead of letting the move alarm); None when the
-        controller can't tell (simulator)."""
+    def _elbow_args(self) -> dict:
+        """Elbow vs table (self_collision.elbow_height): only once the table is taught."""
+        return {"table_z": self.table_z_mm, "elbow_min_mm": self.m.elbow_table_clearance_mm}
+
+    def _ik(self, flange_pose: list[float], near: list[float] | None = None) -> list[float] | None:
+        """Joints for a flange pose from the controller's IK, on the branch of `near` (the current
+        joints). Raises ValidationError when unreachable (instead of letting the move alarm);
+        None when the controller can't tell (simulator)."""
         if self.tool_offset_source != "controller FK":
             return None
         try:
-            return self.robot.inverse_solution(flange_pose)
+            return self.robot.inverse_solution(flange_pose, near=near)
         except ValidationError:
             raise
         except (RobotError, OSError):
@@ -369,7 +374,7 @@ class PrimitiveSkills:
                             "controller's collision detection stopped the arm (alarm cleared, robot enabled again) "
                             f"and it moved up {self.m.contact_backoff_mm:g} mm. That Z is where something blocked "
                             "the gripper.")
-                raise SafetyError(f"{label}: robot alarm during motion — stopped.")
+                raise MotionStopped(f"{label}: robot alarm during motion — stopped.")
             idle = fb["running"] == 0
             if idle and (reached(fb) if reached else elapsed >= self.m.start_grace_s):
                 return self._summary(fb)
@@ -388,7 +393,7 @@ class PrimitiveSkills:
                         "That Z is a measured surface height: use it.")
             if elapsed > self.m.move_timeout_s:
                 self.robot.stop()
-                raise RobotError(f"{label}: not arrived after {self.m.move_timeout_s}s — stopped.")
+                raise MotionStopped(f"{label}: not arrived after {self.m.move_timeout_s}s — stopped.")
             time.sleep(self.m.poll_s)
 
     @property
@@ -446,7 +451,7 @@ class PrimitiveSkills:
             speed, contact = self._approach(self.tip_from_flange(start), tip, speed)
             if contact:
                 linear = True                       # near the table: always straight, slow, sensed
-            joints = self._ik(target)              # unreachable -> ValidationError, no alarm
+            joints = self._ik(target, fb["joints_deg"])  # unreachable -> ValidationError, no alarm
             if not linear and self.floor_limits() is not None:
                 low = self.table_z_mm + self.table.movj_min_height_mm
                 try:
@@ -521,7 +526,7 @@ class PrimitiveSkills:
                 self._check_linear_path(start, target)
                 self._self_check_linear(fb, start, target)
             speed, contact = self._approach(list(tip0), list(tip1), speed)
-            self._ik(target)
+            self._ik(target, fb["joints_deg"])
             self.robot.movl(target, speed)
             result = self._wait(self._pose_reached(target), "move_relative", contact=contact)
             return self._after_motion(result, self._undo_linear(start, speed))

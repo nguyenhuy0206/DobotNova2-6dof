@@ -17,5 +17,10 @@ class SafetyError(RobotError):
     """The robot is not in a state where motion is allowed."""
 
 
+class MotionStopped(SafetyError):
+    """A move was stopped by the safety layer (not arrived in time, or an alarm during it).
+    The harness ends the episode on it: the model gets no further turn."""
+
+
 class ContactError(ValidationError):
     """A slow approach move was blocked by something (the robot stopped and backed off)."""

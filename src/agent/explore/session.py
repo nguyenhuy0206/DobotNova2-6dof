@@ -20,6 +20,7 @@ What is different from the plain agent (agent/toolkit.py):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from actions.local_steps import LocalSteps
 from actions.primitives import create_primitives
@@ -28,7 +29,7 @@ from agent.explore.config import ExploreConfig, load_explore_config
 from agent.explore.diagnosis import Investigation
 from agent.explore.diagnosis import specs as diagnosis_specs
 from agent.explore.pick_place_skills import ensure_pick_place_skills
-from agent.explore.prompt import EXPLORE_INSTRUCTIONS
+from agent.explore.prompt import EXPLORE_INSTRUCTIONS, for_driver
 from agent.explore.tools import code_specs, explore_specs
 from agent.harness import AgentHarness, HarnessOptions
 from agent.toolkit import Toolkit, build_toolkit
@@ -114,7 +115,7 @@ class ExploreSession:
         report = self.harness.run(prompt)
         out = {"episode": self.harness.last_episode, "report": report, "metrics": self.harness.last_metrics,
                "diagnosis": self.investigation.report_text() if self.investigation else ""}
-        if reflect:
+        if reflect and self.cfg.driver == "astra":     # the review writes Astra's memory: Astra's runs only
             out.update(self.reflect(out["episode"]))
         return out
 
@@ -125,6 +126,9 @@ class ExploreSession:
                                     reflect_executor, summarize_episode)
         from memory.store import EpisodeStore
 
+        if self.harness.episodes.driver(episode_id) != "astra":
+            raise ValueError(f"{episode_id} was not run by Astra (driver {self.harness.episodes.driver(episode_id)}): "
+                             "it is not reviewed into Astra's memory")
         recorder = OutcomeRecorder(self.harness.episodes)
         recorder.episode_id = episode_id
         cfg = copy.copy(self.harness.config)
@@ -184,15 +188,17 @@ def compact_state(p, executor=None, runner=None) -> dict:
     return out
 
 def build_explore(confirm=None, mode: str | None = None,
-                  client: AstraClient | None = None, variant: str | None = None) -> ExploreSession:
+                  client: AstraClient | None = None, variant: str | None = None,
+                  driver: str | None = None) -> ExploreSession:
     cfg = load_explore_config()
+    cfg.driver = driver or cfg.driver
     robot_cfg, perception_cfg = load_robot_config(), load_perception_config()
     agent_cfg = load_agent_config()
     agent_cfg.execution_mode = mode or cfg.execution_mode
     agent_cfg.max_steps = cfg.max_steps
     agent_cfg.max_output_tokens = cfg.max_output_tokens
     agent_cfg.allowed_tools = cfg.allowed_tools
-    agent_cfg.system_prompt = EXPLORE_INSTRUCTIONS
+    agent_cfg.system_prompt = for_driver(cfg.driver, EXPLORE_INSTRUCTIONS)
     agent_cfg.truncation = "auto"        # long runs with images: let the API drop the oldest turns
 
     primitives = create_primitives(robot_cfg)
@@ -208,7 +214,13 @@ def build_explore(confirm=None, mode: str | None = None,
              if cfg.view_guard.enabled else None)
     primitives.view_guard = guard
     notes = NotesStore()                  # raw archive (read_history); prompts get the knowledge digest
-    knowledge = KnowledgeStore()
+    if cfg.driver == "qwen":
+        # Qwen's runs are not Astra's experience: its observations go to their own file
+        from common.paths import STUDENT_RUNS_DIR
+        from memory.knowledge import Observations
+        knowledge = KnowledgeStore(observations=Observations(STUDENT_RUNS_DIR / "observations.jsonl"))
+    else:
+        knowledge = KnowledgeStore()
     investigation = Investigation(gate_after_repeats=cfg.diagnosis.gate_after_repeats, knowledge=knowledge)
     path = REPO_ROOT / cfg.skills_file
     library = SkillLibrary(path)
@@ -217,6 +229,9 @@ def build_explore(confirm=None, mode: str | None = None,
                                   library=library, seed_skills=False,
                                   extra_specs=explore_specs(guard, notes, library, knowledge)
                                   + diagnosis_specs(investigation) + code_specs(lambda: runner.local))
+    if cfg.driver == "qwen":                # nor may it change Astra's skills, routines, knowledge, positions
+        for name in QWEN_NO_WRITE:
+            executor.specs.pop(name, None)
     block_top = load_workcell().get("block_top_z_mm")
     runner = kit.skills
     runner.local = LocalSteps(primitives, scene, executor, block_top_z=block_top)
@@ -234,7 +249,20 @@ def build_explore(confirm=None, mode: str | None = None,
     knowledge.state_fn = lambda: _snapshot(primitives)
     knowledge.records = lambda name: executor.mode in ("live", "confirm") and _observed(executor, name)
     harness_cfg = {k: v for k, v in cfg.harness.items() if k != "variant"}
+    if cfg.driver == "qwen":
+        # a local model costs nothing per call: no token budget and no call limit (the robot's safety
+        # guards and the stop rules still apply; Ctrl+C stops the episode)
+        harness_cfg["max_episode_tokens"] = 0
+        agent_cfg.max_steps = int((cfg.qwen or {}).get("max_steps", 0) or 100_000)
     options = HarnessOptions.from_variant(variant or cfg.harness.get("variant", "V3"), **harness_cfg)
+    if client is None and cfg.driver == "qwen":
+        from student.client import LocalQwenClient
+        q = cfg.qwen or {}
+        client = LocalQwenClient(**{k: q[k] for k in ("model", "adapter", "max_output_tokens", "images", "dump_dir")
+                                    if q.get(k)},
+                                 log=log.info)
+        agent_cfg.model = f"qwen-local:{Path(client.model_path).name}" + (f"+{Path(client.adapter).name}"
+                                                                          if client.adapter else "")
     harness = AgentHarness(client if client is not None else AstraClient(agent_cfg), executor, agent_cfg, skills=library,
                            send_images=perception_cfg.send_images_to_model, notes=knowledge, options=options,
                            state_fn=lambda: compact_state(primitives, executor, runner), skill_runner=runner,
@@ -243,6 +271,11 @@ def build_explore(confirm=None, mode: str | None = None,
 
 
 OBSERVED_READS = {"look", "find_objects", "run_routine"}
+
+# Tools that write Astra's memory (or count runs of Astra's skills / routines): not offered to Qwen.
+QWEN_NO_WRITE = ("save_skill", "rollback_skill", "retire_skill", "run_skill", "write_routine", "rollback_routine",
+                 "run_routine", "define_concept", "update_model", "propose_hypothesis", "archive_knowledge",
+                 "record_measurement", "diagnose", "conclude", "save_position")
 
 
 def _observed(executor, name: str) -> bool:

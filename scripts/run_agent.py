@@ -46,7 +46,7 @@ def main() -> None:
         print("\n!! Ctrl+C — stopping the robot")
         try:
             kit.primitives.stop()
-            print("Robot stopped (ResetRobot). Check it in the Debug tab before continuing.")
+            print("Robot stopped (Pause). Check it in the Debug tab before continuing.")
         except Exception as exc:  # noqa: BLE001 — still exit; tell the operator loudly
             print(f"!! STOP FAILED: {exc} — use the Debug tab STOP / emergency button NOW")
         raise SystemExit(130)

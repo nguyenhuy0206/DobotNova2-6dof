@@ -12,6 +12,16 @@ task: >
 #   Pick the cube from the white box, then move it to the orange box. Report after done.
 #   Pick the cube from the white box, then move it to the red box. Report after done.
 
+# Who drives the robot: astra (API model) or qwen (the local student model, src/student/;
+# scripts/run_explore.sh --driver qwen). A qwen episode has no self-review (that is Astra's job).
+driver: astra              # astra = the API model; qwen = the local student
+qwen:
+  model: data/models/qwen3.5-4b-4bit-frozen     # the frozen base (scripts/train_student.py freeze)
+  adapter: ""                                   # a fine-tuned run: data/student/runs/<id>
+  max_output_tokens: 2000                       # 400 cut a tool call in half on 19 Nov (the episode ended)
+  images: false                                 # positions come from look's detections
+  # no token budget and no call limit for qwen (local, free): it runs until it reports or Ctrl+C
+
 execution_mode: live      # live | confirm (ask y/N on every motion) | dry_run
 max_steps: 60             # model calls per episode (a skill call runs many steps locally)
 max_output_tokens: 2000

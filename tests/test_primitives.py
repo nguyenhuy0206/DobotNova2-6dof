@@ -105,7 +105,7 @@ def test_timeout_stops_robot(prims, sim):
     sim.stall = True
     with pytest.raises(RobotError, match="not arrived"):
         prims.move_to_pose(350, 0, 300, 180, 0, 0)
-    assert sim.dashboard_log[-1] == "ResetRobot()"
+    assert sim.dashboard_log[-1] == "Pause()"
 
 
 def test_alarm_during_motion_stops_robot(prims, sim):
@@ -113,7 +113,7 @@ def test_alarm_during_motion_stops_robot(prims, sim):
     sim.motion = lambda cmd: sim.state.__setitem__("error", 1)
     with pytest.raises(SafetyError, match="alarm"):
         prims.jog_joint(1, 5)
-    assert sim.dashboard_log[-1] == "ResetRobot()"
+    assert sim.dashboard_log[-1] == "Pause()"
 
 
 # ---------------------------------------------------------------- fingertip TCP + speed cap

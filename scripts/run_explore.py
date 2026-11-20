@@ -8,6 +8,7 @@
     scripts/run_explore.sh --review 2          no robot: Astra reviews the last 2 episodes (outcome, skills, notes)
     scripts/run_explore.sh --review-all        no robot: one review across ALL grasp episodes -> concrete skills
     scripts/run_explore.sh --variant V0        harness variant for this run (V0 baseline … V3 default)
+    scripts/run_explore.sh --driver qwen       the local student model drives (src/student/), no review
     scripts/run_explore.sh --promote NAME      operator: candidate skill -> validated (needs supervised successes)
     scripts/run_explore.sh --rollback NAME 2   operator: restore version 2 of a skill as the newest version
     scripts/run_explore.sh --skills            list skills with version, status and evidence
@@ -38,6 +39,7 @@ def main() -> None:
     ap.add_argument("--review-all", action="store_true", help="review all grasp episodes together (robot not used)")
     ap.add_argument("--review", metavar="N|ID", help="only review the last N episodes, or one episode id (robot not used)")
     ap.add_argument("--variant", choices=["V0", "V1", "V2", "V3"], help="harness variant (default: explore.yaml)")
+    ap.add_argument("--driver", choices=["astra", "qwen"], help="who drives the robot (default: explore.yaml driver)")
     ap.add_argument("--promote", metavar="NAME", help="operator: mark a candidate skill validated")
     ap.add_argument("--rollback", nargs=2, metavar=("NAME", "VERSION"), help="operator: restore a skill version")
     ap.add_argument("--skills", action="store_true", help="list skills and exit")
@@ -47,7 +49,10 @@ def main() -> None:
     if args.promote or args.rollback or args.skills:
         skill_admin(args)
         return
-    s = build_explore(confirm=ask_operator, mode=args.mode, variant=args.variant)
+    s = build_explore(confirm=ask_operator, mode=args.mode, variant=args.variant, driver=args.driver)
+    if s.cfg.driver == "qwen":
+        args.no_reflect = True          # the self-review writes knowledge and skills: not the student's job
+        print(f"Driver: {s.harness.client.endpoint} (no self-review after the episode)")
     p, a = s.kit.primitives, s.harness.config
     if args.review_all:
         from agent.explore.learning import review_all
@@ -65,8 +70,7 @@ def main() -> None:
           f"budget {o.max_episode_tokens or '∞'} tokens)")
     print(f"  active tool offset {[round(x, 1) for x in p.active_tool_offset]} mm ({p.tool_offset_source})")
     print(f"  table z {p.table_z_mm} mm · grip closes to {p.grip_close_position}/1000 · "
-          f"view guard {'ON' if s.view_guard else 'off'} · env calibrated: {s.kit.scene.env_calibration is not None} "
-          f"({len(s.calibration.points)} points recorded)")
+          f"view guard {'ON' if s.view_guard else 'off'} · env calibrated: {s.kit.scene.env_calibration is not None}")
     print(f"  tools: {', '.join(t.name for t in s.executor.list())}")
 
     problems = s.preflight()
@@ -115,7 +119,7 @@ def main() -> None:
         print("\n!! Ctrl+C — stopping the robot")
         try:
             p.stop()
-            print("Robot stopped (ResetRobot). Check it in the Debug tab before continuing.")
+            print("Robot stopped (Pause). Check it in the Debug tab before continuing.")
         except Exception as exc:  # noqa: BLE001
             print(f"!! STOP FAILED: {exc} — use the E-stop NOW")
         raise SystemExit(130)

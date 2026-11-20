@@ -96,7 +96,7 @@ def cameras(args) -> None:
                      apply=not args.dry, prior=prior)
     except KeyboardInterrupt:
         p.stop()
-        print("\n!! stopped (ResetRobot)")
+        print("\n!! stopped (Pause)")
         raise SystemExit(130)
     _show(rep)
     print("saved:", rep["saved"] or "nothing", "· session:", rep["session"])

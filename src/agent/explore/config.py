@@ -45,6 +45,9 @@ class ExploreConfig:
     skills: SkillPolicy = field(default_factory=SkillPolicy)
     diagnosis: DiagnosisPolicy = field(default_factory=DiagnosisPolicy)
     reflect_max_steps: int = 6
+    # who drives the robot in an episode: "astra" (API model) or "qwen" (the local student, src/student/)
+    driver: str = "astra"
+    qwen: dict = field(default_factory=dict)       # model, adapter, max_output_tokens, images
 
 def load_explore_config(path=CONFIG_DIR / "explore.yaml") -> ExploreConfig:
     return _build(ExploreConfig, _read_yaml(path))

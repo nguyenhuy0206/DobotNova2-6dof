@@ -17,6 +17,8 @@ EPISODES_DIR = DATA_DIR / "episodes"
 MEMORY_DIR = DATA_DIR / "memory"
 ARCHIVE_DIR = DATA_DIR / "archive"
 POSITIONS_FILE = MEMORY_DIR / "positions.json"
+# what the local student model (Qwen) produced while driving the robot: kept apart from Astra's memory
+STUDENT_RUNS_DIR = DATA_DIR / "student" / "robot_runs"
 REALSENSE_LIB_DIR = REPO_ROOT / "third_party" / "librealsense" / "lib"
 
 

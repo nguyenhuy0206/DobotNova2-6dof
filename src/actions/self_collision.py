@@ -28,6 +28,14 @@ and the upper arm (shoulder -> elbow). It shrinks when the elbow folds (J3 far n
 So it is checked only while J3 <= motion.wrist_fold_deg (default -100°), with the limit
 motion.wrist_clearance_mm (default 190, between 183.5 and 196.8).
 
+Elbow height = lowest of the elbow and the wrist joint centres (DH origins 2–4) above the table. The
+fingertip/flange floor does not see the arm: reaching down close to the base folds the elbow DOWN
+toward the table.
+  * 19 Nov (episode 180814): descend_to z=20 at (-280,-360), elbow centre 57 -> 41 mm above the
+    table at (-155,-150): the arm stalled against the table ("not arrived", back-off failed).
+  * 845 poses from the episodes without contact: lowest elbow centre 51 mm (12 Nov, (-230,-380,52)).
+motion.elbow_table_clearance_mm (default 60) is the limit; 0 = off.
+
 A move is refused when its path or target goes below a limit AND below the clearance it starts
 with, so a move that only increases the clearance is always allowed (the arm can always get out).
 """
@@ -68,31 +76,40 @@ def wrist_clearance(joints_deg) -> float:
 
 WRIST_FOLD_DEG = -100.0          # J3 at or below this = elbow folded deep enough for the wrist check
 
-def _measure(q, tool_length_mm: float, fold_deg: float = WRIST_FOLD_DEG) -> dict:
+def elbow_height(joints_deg, table_z: float) -> float:
+    """mm from the table to the lowest elbow / wrist joint centre."""
+    _, p = frames(joints_deg)
+    return min(float(x[2]) for x in p[1:4]) - table_z
+
+
+def _measure(q, tool_length_mm: float, fold_deg: float = WRIST_FOLD_DEG, table_z: float | None = None) -> dict:
     mm, link = clearance(q, tool_length_mm)
     w = wrist_clearance(q) if q[2] <= fold_deg else math.inf
-    return {"gripper": (mm, f"the gripper would come within {mm:.0f} mm of the robot's {link}"),
+    e = math.inf if table_z is None else elbow_height(q, table_z)
+    return {"table": (e, f"the elbow would come within {e:.0f} mm of the table (joint centre; the housing is "
+                         "~50 mm in radius) — reaching this low this close to the base folds the elbow down"),
+            "gripper": (mm, f"the gripper would come within {mm:.0f} mm of the robot's {link}"),
             "wrist": (w, f"the elbow folds to J3 {q[2]:.0f}° and the wrist comes within {w:.0f} mm of the "
                          "upper arm")}
 
-def _floors(q, tool_length_mm: float, limits: dict) -> dict:
-    now = _measure(q, tool_length_mm)
+def _floors(q, tool_length_mm: float, limits: dict, table_z: float | None = None) -> dict:
+    now = _measure(q, tool_length_mm, table_z=table_z)
     return {k: min(lim, now[k][0] - 1) for k, lim in limits.items() if lim > 0}
 
 def check_joint_path(start, end, tool_length_mm: float, min_mm: float, step_deg: float = 2.0,
-                     wrist_min_mm: float = 0.0) -> None:
-    """Joint-interpolated motion (JointMovJ / MovJ)."""
-    limits = {"gripper": min_mm, "wrist": wrist_min_mm}
-    floors = _floors(start, tool_length_mm, limits)
+                     wrist_min_mm: float = 0.0, table_z: float | None = None, elbow_min_mm: float = 0.0) -> None:
+    """Joint-interpolated motion (JointMovJ / MovJ). table_z None: no elbow-vs-table check."""
+    limits = {"gripper": min_mm, "wrist": wrist_min_mm, "table": elbow_min_mm if table_z is not None else 0}
+    floors = _floors(start, tool_length_mm, limits, table_z)
     span = max(abs(e - s) for s, e in zip(start, end))
     n = max(1, math.ceil(span / step_deg))
     for k in range(1, n + 1):
         q = [s + (e - s) * k / n for s, e in zip(start, end)]
-        _check(q, tool_length_mm, floors, limits, "target" if k == n else f"joint path {k * 100 // n}%")
+        _check(q, tool_length_mm, floors, limits, "target" if k == n else f"joint path {k * 100 // n}%", table_z)
 
 def check_linear_path(start_joints, start_flange: list[float], target_flange: list[float],
                       tool_length_mm: float, min_mm: float, step_mm: float = 10.0, step_deg: float = 3.0,
-                      wrist_min_mm: float = 0.0) -> None:
+                      wrist_min_mm: float = 0.0, table_z: float | None = None, elbow_min_mm: float = 0.0) -> None:
     """Straight-line motion (MovL): follow the line with IK from the current joints."""
     from common.poses import interpolate_rotation
     p0, p1 = np.array(start_flange[:3]), np.array(target_flange[:3])
@@ -100,8 +117,8 @@ def check_linear_path(start_joints, start_flange: list[float], target_flange: li
     ang = math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(R0.T @ R1) - 1) / 2))))
     n = max(1, math.ceil(max(np.linalg.norm(p1 - p0) / step_mm, ang / step_deg)))
     q = list(start_joints)
-    limits = {"gripper": min_mm, "wrist": wrist_min_mm}
-    floors = _floors(q, tool_length_mm, limits)
+    limits = {"gripper": min_mm, "wrist": wrist_min_mm, "table": elbow_min_mm if table_z is not None else 0}
+    floors = _floors(q, tool_length_mm, limits, table_z)
     for k in range(1, n + 1):
         s = k / n
         pose = [*map(float, p0 + (p1 - p0) * s), *matrix_to_rpy_deg(interpolate_rotation(R0, R1, s))]
@@ -109,12 +126,15 @@ def check_linear_path(start_joints, start_flange: list[float], target_flange: li
         if nxt is None:
             return            # the controller's own IK / reachability check reports this case
         q = nxt
-        _check(q, tool_length_mm, floors, limits, "target" if k == n else f"path {k * 100 // n}%")
+        _check(q, tool_length_mm, floors, limits, "target" if k == n else f"path {k * 100 // n}%", table_z)
 
-def _check(q, tool_length_mm: float, floors: dict, limits: dict, where: str) -> None:
-    now = _measure(q, tool_length_mm)
+def _check(q, tool_length_mm: float, floors: dict, limits: dict, where: str, table_z: float | None = None) -> None:
+    now = _measure(q, tool_length_mm, table_z=table_z)
     for key, floor in floors.items():
         mm, text = now[key]
+        if mm < floor and key == "table":
+            raise ValidationError(f"arm vs table ({where}): {text} (limit {limits[key]:g} mm). Not moved. "
+                                  "Lower targets close to the base need the arm further out, or a higher Z.")
         if mm < floor:
             raise ValidationError(f"self-collision ({where}): {text} (limit {limits[key]:g} mm) — the arm would "
                                   "fold onto itself there. Not moved.")

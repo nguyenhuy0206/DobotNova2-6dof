@@ -89,6 +89,9 @@ class MotionConfig:
     self_clearance_mm: float = 65.0
     # wrist links vs the upper arm when the elbow folds (same module); 0 = off
     wrist_clearance_mm: float = 190.0
+    # elbow / wrist joint centres vs the table (same module): reaching low close to the base folds the
+    # elbow down onto the table (19 Nov); 0 = off
+    elbow_table_clearance_mm: float = 60.0
     recovery_timeout_s: float = 12.0
     home_joints: list[float] = field(default_factory=lambda: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0])
 

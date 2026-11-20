@@ -48,6 +48,15 @@ class PositionStore:
         return positions
 
 
+def driver_of(meta: dict | None) -> str:
+    """Who drove an episode, from its start meta: "astra" (the API model) or "qwen" (the local student).
+    Episodes before 19 Nov 17:40 carry no "driver"; theirs is read from the model name."""
+    meta = meta or {}
+    if meta.get("driver"):
+        return str(meta["driver"])
+    return "qwen" if str(meta.get("model", "")).startswith("qwen-local") else "astra"
+
+
 class EpisodeStore:
     """One JSONL file per episode: every agent/tool step is appended as a line.
 
@@ -82,6 +91,18 @@ class EpisodeStore:
         path = self.root / f"{episode_id}.jsonl"
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
-    def list(self) -> list[str]:
-        """Episode ids (YYYYMMDD-HHMMSS-xxxxxx), oldest first; index.jsonl etc. are not episodes."""
-        return sorted(p.stem for p in self.root.glob("*.jsonl") if p.stem[:8].isdigit())
+    def driver(self, episode_id: str) -> str:
+        path = self.root / f"{episode_id}.jsonl"
+        try:
+            with path.open(encoding="utf-8") as fh:
+                first = json.loads(fh.readline() or "{}")
+        except (OSError, ValueError):
+            return "astra"
+        return driver_of(first.get("meta"))
+
+    def list(self, driver: str | None = "astra") -> list[str]:
+        """Episode ids (YYYYMMDD-HHMMSS-xxxxxx), oldest first; index.jsonl etc. are not episodes.
+        driver: only the episodes that driver ran (default: Astra's: Qwen's runs are not Astra's
+        experience); None = every episode."""
+        ids = sorted(p.stem for p in self.root.glob("*.jsonl") if p.stem[:8].isdigit())
+        return ids if driver is None else [i for i in ids if self.driver(i) == driver]

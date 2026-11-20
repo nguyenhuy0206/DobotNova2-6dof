@@ -65,6 +65,21 @@ BOUNDED_HINT = (
 )
 
 
+STOP_TEXTS = ("not arrived after", "robot alarm during motion")
+
+
+def motion_stopped(result: dict) -> str | None:
+    """The safety layer stopped the robot during this call (primitives.MotionStopped), directly or
+    inside a routine/skill that turned the error into text. Returns the message, or None."""
+    if result.get("error_type") == "MotionStopped":
+        return str(result.get("error"))[:200]
+    inner = result.get("result") if isinstance(result.get("result"), dict) else {}
+    for text in (result.get("error"), inner.get("detail"), inner.get("error")):
+        if text and any(t in str(text) for t in STOP_TEXTS):
+            return str(text)[:200]
+    return None
+
+
 @dataclass
 class HarnessOptions:
     variant: str = "V0"
@@ -244,9 +259,12 @@ class AgentHarness:
     def run(self, task: str, images: list[str] | None = None) -> str:
         """images: base64 JPEGs shown with the task (e.g. evidence for a review)."""
         opt = self.options
+        from memory.store import driver_of
         episode = self.episodes.start(task, {"model": self.config.model, "mode": self.executor.mode,
-                                             "variant": opt.variant})
+                                             "variant": opt.variant, "driver": driver_of({"model": self.config.model})})
         self.last_episode = episode
+        if hasattr(self.client, "start_episode"):       # a local model logs its own input/output per episode
+            self.client.start_episode(self.episodes.root / episode)
         if self.skill_runner is not None:
             self.skill_runner.episode = episode
         if self.notes is not None and hasattr(self.notes, "episode"):
@@ -258,6 +276,7 @@ class AgentHarness:
         metrics = EpisodeMetrics(variant=opt.variant)
         router = EventRouter()
         repeats, repeat_stop = RepeatGuard(opt.max_repeats), None
+        robot_stopped = None              # a move the safety layer stopped: the episode ends, no further model turn
         held: dict = {}                     # the current grasp: z when caught, whether its image was taken
         images_policy = ImagePolicy(**{k: getattr(opt.images, k) for k in ("mode", "env_detail", "wrist_detail",
                                                                            "same_threshold")})
@@ -276,7 +295,9 @@ class AgentHarness:
 
         start_images = [image_part(i, None) for i in images or []]
         if bounded:
-            first = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(self._state())},
+            st0 = self._state()
+            self.episodes.append(episode, {"event": "state", "step": 0, "state": st0})
+            first = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(st0)},
                                                   *start_images]}]
         else:
             first = task if not images else [{"role": "user", "content": [
@@ -364,7 +385,8 @@ class AgentHarness:
                         wm.progress.append(f"{p['color']} placed at ({p.get('x')}, {p.get('y')}) — skill verified")
                 outputs.append({"type": "function_call_output", "call_id": call.call_id,
                                 "output": json.dumps(result, ensure_ascii=False, default=str)})
-                if (opt.chunk.enabled and aborts_chunk(events)) or repeat_stop:
+                robot_stopped = robot_stopped or motion_stopped(result)
+                if (opt.chunk.enabled and aborts_chunk(events)) or repeat_stop or robot_stopped:
                     aborted = True
             self.last_turn = {"executed": len(executed), "deferred": len(deferred), "reason": why}
             if deferred:
@@ -376,6 +398,9 @@ class AgentHarness:
                                     "output": json.dumps({"ok": False, "executed": False,
                                                           "error": f"not executed: {why}"})})
             # camera images the router asked for but no look delivered: say so in the context
+            if robot_stopped:
+                reason, final = "robot_stopped", f"Stopped: the safety layer stopped the robot ({robot_stopped})"
+                break
             if router.stop_reason:
                 reason, final = "robot_alarm", f"Stopped: {router.stop_reason}"
                 break
@@ -410,7 +435,9 @@ class AgentHarness:
             if bounded:
                 wm.record_turn(step, response.output_text, executed + auto, deferred, why, digests)
                 extra = ""
-                msg = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(self._state(), extra)},
+                st = self._state()
+                self.episodes.append(episode, {"event": "state", "step": step + 1, "state": st})
+                msg = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(st, extra)},
                                                     *img_parts]}]
                 response = self._create(episode, step + 1, metrics, len(img_parts), input=msg, tools=tools,
                                         instructions=instructions)

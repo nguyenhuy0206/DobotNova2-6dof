@@ -236,6 +236,9 @@ def capture_wrist(prims, scene, cfg: CalibrationConfig, session: Path, speed: in
     det0, image0 = grab(0)
     if det0 is None and prior is not None:
         aim = aim_start(prims, prior, cfg)
+        here = state["pose"]
+        if aim is not None and max(abs(a - b) for a, b in zip(aim[:3], here[:3])) < 2.0:
+            aim = None                      # already there: a zero-length move once raised alarms 48-59
         if aim is not None:
             log(f"wrist: board not in view; aiming the camera at it from {[round(v) for v in aim[:3]]}")
             prims.move_to_pose(*aim, speed=speed)

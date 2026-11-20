@@ -61,3 +61,17 @@ Rules of the episode:
 - Finish with a short report (no tool call). If anything failed, it MUST have a "Why it failed" part: per
   failure the confirmed cause and the fix, or the open hypotheses and the test that would decide them.
 """
+
+
+def for_driver(driver: str, text: str = EXPLORE_INSTRUCTIONS) -> str:
+    """The same prompt, with the lines that are only true for Astra made true for the local student:
+    no name, no review after the episode (the student gets none), no token budget (it runs locally)."""
+    if driver != "qwen":
+        return text
+    out = text.replace("You are Astra, controlling a real Dobot Nova 2 arm",
+                       "You are controlling a real Dobot Nova 2 arm")
+    out = out.replace("Each run is one EPISODE; after it you review the log and may update your skills, code and knowledge.",
+                      "Each run is one EPISODE.")
+    out = out.replace("- every model call costs tokens and the episode has a token budget; STATE already holds pose, gripper and\n"
+                      "  zone.", "- STATE already holds pose, gripper and zone.")
+    return out

@@ -56,4 +56,37 @@ def test_stop_does_not_wait_for_lock(actions, sim):
         done = threading.Event()
         threading.Thread(target=lambda: (actions.system("stop"), done.set()), daemon=True).start()
         assert done.wait(1.0)
-    assert sim.dashboard_log[-1] == "ResetRobot()"
+    assert sim.dashboard_log[-1] == "Pause()"
+
+
+def test_stop_never_resets_unless_every_stop_command_is_refused():
+    """19 Nov (operator): no ResetRobot() to the control box; Stop() is not in this firmware."""
+    import pytest
+
+    from common.errors import RobotError
+    from drivers.nova2 import Nova2
+    sent = []
+
+    class Box(Nova2):
+        def __init__(self, accept):
+            self.accept = accept
+
+        def dashboard(self, command):
+            sent.append(command)
+            if command not in self.accept:
+                raise RobotError(f"refused {command}")
+            return f"0,{{}},{command};"
+
+    assert Box({"Pause()"}).stop() == "0,{},Pause();" and sent == ["Pause()"]
+    sent.clear()
+    assert Box({"ResetRobot()"}).stop() == "0,{},ResetRobot();" and sent == ["Pause()", "ResetRobot()"]
+    with pytest.raises(RobotError):
+        Box(set()).stop()
+
+
+def test_a_stopped_move_ends_the_episode():
+    from agent.harness import motion_stopped
+    assert motion_stopped({"ok": False, "error_type": "MotionStopped", "error": "x: not arrived after 30s — stopped."})
+    assert motion_stopped({"ok": True, "result": {"ok": False, "detail": "move_relative: not arrived after 30s — stopped."}})
+    assert motion_stopped({"ok": False, "error": "move_relative: CONTACT at fingertip Z=68.3"}) is None   # contact goes on
+    assert motion_stopped({"ok": True, "result": {"pose": [0, 0, 0]}}) is None

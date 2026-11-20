@@ -191,6 +191,28 @@ def test_unreachable_pose_refused_without_alarm(p, sim):
     with pytest.raises(ValidationError, match="reachable"):
         p.move_relative(dx=50)
     assert sim.motion_log == []
+    asked = [c for c in sim.dashboard_log if c.startswith("InverseSolution")]
+    joints = ",".join(f"{v:.4f}" for v in sim.state["joints_deg"]).replace("-0.0000", "0.0000")
+    assert asked[0].endswith(f",0,0,1,{{{joints}}})") and asked[1].endswith(",0,0)")   # near branch, then plain
+
+
+def test_ik_on_the_current_branch_lets_the_move_through(p, sim):
+    """19 Nov: the controller's default IK branch refused a 20 mm lift the arm could make;
+    asked near the current joints it solves, and the move goes."""
+    from common.errors import RobotError
+    sim.fk = lambda j: list(sim.state["pose"])
+    real_dashboard = sim.dashboard
+
+    def dashboard(cmd):
+        if cmd.startswith("InverseSolution"):
+            sim.dashboard_log.append(cmd)
+            if ",1,{" not in cmd:
+                raise RobotError("Controller từ chối InverseSolution: -1")
+            return "0,{1,2,3,4,5,6}," + cmd + ";"
+        return real_dashboard(cmd)
+    sim.dashboard = dashboard
+    p.move_relative(dz=20)
+    assert any(c.startswith("MovL") for c in sim.motion_log)
 
 
 def test_scene_ignores_coloured_tape_on_the_robot():
@@ -261,7 +283,7 @@ def test_contact_stops_and_backs_off(table, sim):
     sim.feedback = feedback
     with pytest.raises(ContactError, match=r"CONTACT at fingertip Z=95"):
         table.move_relative(dz=-20)
-    assert sim.dashboard_log[-1] == "ResetRobot()" or "ResetRobot()" in sim.dashboard_log
+    assert sim.dashboard_log[-1] == "Pause()" or "Pause()" in sim.dashboard_log
     assert sim.state["pose"][2] == pytest.approx(110)            # backed off 15 mm
 
 

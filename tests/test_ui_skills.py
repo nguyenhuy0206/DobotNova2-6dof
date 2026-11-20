@@ -83,7 +83,7 @@ def test_gripper_buttons(server, gripper):
 def test_stop_needs_no_confirm_and_skips_lock(server, sim, actions):
     with actions.lock:   # simulate a skill mid-motion holding the lock
         status, body = post(server + "/api/skills/run", {"name": "stop", "args": {}})
-    assert status == 200 and body["ok"] and sim.dashboard_log[-1] == "ResetRobot()"
+    assert status == 200 and body["ok"] and sim.dashboard_log[-1] == "Pause()"
 
 
 def test_skill_errors_are_reported(server):

@@ -98,7 +98,7 @@ class ActionExecutor:
             return {"ok": True, "action": name, "executed": True, "result": result}
         except (RobotError, OSError, ValueError, TypeError) as exc:
             log.warning("%s %s failed: %s", name, args, exc)
-            return {"ok": False, "action": name, "executed": False, "error": str(exc)}
+            return {"ok": False, "action": name, "executed": False, "error": str(exc), "error_type": type(exc).__name__}
 
     def run_sequence(self, steps: list[dict], stop_on_error: bool = True) -> list[ActionResult]:
         """Run [{"tool": name, "args": {...}}, …] — a composite skill built from primitives."""

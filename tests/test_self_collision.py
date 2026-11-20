@@ -83,3 +83,20 @@ def test_the_wrist_check_only_counts_with_the_elbow_folded():
     tilted = sc.ik_near([-215.0, -303.0, 402.0, -165.0, -15.0, 76.0], [26.2, 64.8, -82.1, 107.0, 259.0, -284.5])
     assert tilted[2] > -100 and sc.wrist_clearance(tilted) < 190        # ran fine during calibration
     sc.check_joint_path(tilted, tilted, 118, LIMIT, wrist_min_mm=190)
+
+
+def test_elbow_vs_table_19_nov_descent_near_the_base():
+    """180814: descend_to z=20 at (-280,-360) folded the elbow onto the table (stall at elbow 57 -> 41)."""
+    from actions import self_collision as sc
+    from drivers.nova2_kinematics import flange_pose
+    J = [43.72, 126.49, -111.86, 60.63, 256.33, -228.06]           # fingertip z 103, elbow centre 57 mm
+    f = flange_pose(J)
+    down, up = list(f), list(f)
+    down[2] -= 19
+    up[2] += 19
+    with pytest.raises(ValidationError, match="arm vs table"):
+        sc.check_linear_path(J, f, down, 127.1, 65, wrist_min_mm=190, table_z=0.3, elbow_min_mm=60)
+    sc.check_linear_path(J, f, up, 127.1, 65, wrist_min_mm=190, table_z=0.3, elbow_min_mm=60)   # way out: allowed
+    sc.check_linear_path(J, f, down, 127.1, 65, wrist_min_mm=190)                              # no table: no check
+    # 12 Nov: the lowest elbow without contact (51 mm) — the far-out grasp poses of today stay allowed
+    assert sc.elbow_height([21, 117, -59, 9, 278, -287], 0.3) > 90
