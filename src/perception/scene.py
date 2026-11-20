@@ -13,6 +13,8 @@ without them objects are still reported in pixels.
 """
 from __future__ import annotations
 
+import math
+
 import base64
 import time
 import urllib.error
@@ -66,9 +68,14 @@ class UIFrameSource:
         try:
             with urllib.request.urlopen(self.url, timeout=self.timeout) as r:
                 data = np.frombuffer(r.read(), np.uint8)
+                captured = r.headers.get("X-Capture-Monotonic-Ns")
+                sequence = r.headers.get("X-Frame-Sequence")
+                stream = r.headers.get("X-Frame-Stream")
         except (urllib.error.URLError, OSError) as exc:
             raise RobotError(f"camera frame unavailable ({self.url}) — is scripts/run_ui.sh running? {exc}") from exc
-        return Frame(color=cv2.imdecode(data, cv2.IMREAD_COLOR))
+        return Frame(color=cv2.imdecode(data, cv2.IMREAD_COLOR),
+                     captured_ns=int(captured) if captured else None,
+                     sequence_id=int(sequence) if sequence else None, stream_id=stream)
 
 
 class Scene:
@@ -156,8 +163,20 @@ class Scene:
             return True
         bounds = (self.workspace.x, self.workspace.y, self.workspace.z)
         r_max = getattr(self.workspace, "max_radius_mm", None)
-        if r_max is not None and (xyz_mm[0] ** 2 + xyz_mm[1] ** 2) ** 0.5 > r_max + margin_mm:
+        r = (xyz_mm[0] ** 2 + xyz_mm[1] ** 2) ** 0.5
+        if r_max is not None and r > r_max + margin_mm:
             return False
+        sector = getattr(self.workspace, "sector_deg", None)
+        if sector is not None:
+            # outside the working sector (+ margin_mm along the arc), or next to the base axis (the robot's
+            # own base: its E-stop button came back as a red object at (84, -18), 85 mm out, on 20 Nov)
+            if r < getattr(self.workspace, "sector_min_radius_mm", 150.0):
+                return False
+            lo, hi = sector
+            ang = math.degrees(math.atan2(xyz_mm[1], xyz_mm[0]))
+            span, off = (hi - lo) % 360, (ang - lo) % 360
+            if off > span and min(off - span, 360 - off) > math.degrees(margin_mm / r):
+                return False
         return all(lo - margin_mm <= c <= hi + margin_mm for c, (lo, hi) in zip(xyz_mm, bounds))
 
     def look(self, camera: str = "env", colors: list[str] | None = None,
@@ -175,7 +194,9 @@ class Scene:
                    if not any(o["label"] == c for o in objects) and c in self.last_seen}
         result = {"camera": camera, "image_size": [w, h], "has_depth": frame.depth_m is not None,
                   "calibrated": camera == "env" and self.env_calibration is not None,
-                  "objects": objects, "not_visible_last_seen": missing}
+                  "objects": objects, "not_visible_last_seen": missing,
+                  "captured_ns": frame.captured_ns, "sequence_id": frame.sequence_id,
+                  "stream_id": frame.stream_id, "legacy": frame.captured_ns is None}
         if zoom and (int(zoom[2]) <= 0 or int(zoom[3]) <= 0 or
                      (int(zoom[0]) <= 0 and int(zoom[1]) <= 0 and int(zoom[2]) >= w and int(zoom[3]) >= h)):
             zoom = None                                  # [0,0,0,0] / whole image: no crop (was an 8x8 crop)
@@ -194,8 +215,10 @@ class Scene:
 
     def find_report(self, color: str, camera: str = "env") -> dict:
         """Tool-friendly result: current detections + last sighting when hidden."""
-        objects = [o.summary() for o in self.find(color, camera)]
-        report = {"objects": objects}
+        frame = self.observe(camera)
+        objects = [o.summary() for o in self.find(color, camera, frame)]
+        report = {"objects": objects, "captured_ns": frame.captured_ns, "sequence_id": frame.sequence_id,
+                  "stream_id": frame.stream_id, "legacy": frame.captured_ns is None}
         if not objects:
             report["last_seen"] = self.last_seen_info(color)
             report["hint"] = ("not visible now — often hidden by the arm. Use last_seen, move the arm "

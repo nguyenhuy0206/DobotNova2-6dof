@@ -18,17 +18,25 @@ joint_step:              # relative jog, degrees
 # Cartesian limits in the robot base frame (mm), checked for the fingertip AND the flange on every
 # move. Surveyed 18 Nov 2026 by hand-guided touches (data/memory/workcell_survey.json):
 #   reach along the table edge 707–717 mm (fingertip, gripper tilted) -> radius 690 (20 mm margin)
-#   highest pose the operator allows (zmax): flange z 528 -> z max 530 (home: 524)
+#   highest pose the operator allows: 20 Nov, operator -> z max 600 (was 530 from the 18 Nov 'zmax' pose,
+#   flange z 528; home: 524). The D455 keep-out reaches z 660, so the camera stays protected above 530.
 # The table floor comes from data/memory/workcell.json (table_z_mm), not from z[0].
 workspace:
   x: [-720, 720]
   y: [-720, 720]
-  z: [0, 530]
+  z: [0, 600]
   max_radius_mm: 690
+  # Working sector, 20 Nov: the operator swept the fingertip over the table with the joints at their
+  # maximum (zone_1..zone_5, r 711–714 mm, z ~80). zone_1 (-35.6, -709.8) is at -92.9°, zone_5 (-695.2, 150.5)
+  # at 167.8°: allowed counter-clockwise from zone_5 through ±180 to zone_1 (the table side). The edges are
+  # the touched points themselves (no margin). The D455 (-65…-77°) and the back of the robot are outside.
+  sector_deg: [167.8, -92.9]
   keep_out:             # vertical cylinders the fingertip and flange must not enter
-    # D455 after the 18 Nov move: touches front/back/side (camera455_*), every contact candidate
-    # (gripper centre or either open fingertip) within 96 mm of (-5, -632), z 114–154 -> +40 mm margin
-    - {name: D455, xy: [-5, -632], radius_mm: 135, z: [0, 220]}
+    # D455 after the 20 Nov move: touches front/right/back (camera3d_*; the other side is out of reach),
+    # every contact candidate within 95 mm of (309, -587), touched z 492–524 -> +40 mm margin. Top from the
+    # tape height instead (camera 600–620 mm above the table, above the highest touch) + 40 mm.
+    # (18 Nov position, retired: xy [-5, -632], z [0, 220])
+    - {name: D455, xy: [309.0, -587.0], radius_mm: 135, z: [0, 660]}
 
 motion:                  # primitive skills (src/actions/primitives.py)
   joint_limits_deg: [360, 180, 156, 360, 360, 360]

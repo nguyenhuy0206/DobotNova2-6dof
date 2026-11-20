@@ -57,6 +57,11 @@ class WorkspaceLimits:
     max_radius_mm: float | None = None      # sqrt(x² + y²) limit; None = box only
     # [{"name": "D455", "xy": [x, y], "radius_mm": r, "z": [lo, hi]}, ...]
     keep_out: list = field(default_factory=list)
+    # Allowed working sector: azimuth atan2(y, x) in degrees, counter-clockwise from [0] to [1]
+    # (may wrap through ±180). None = every direction. Points closer to the base axis than
+    # sector_min_radius_mm are exempt (the azimuth means nothing there).
+    sector_deg: tuple[float, float] | None = None
+    sector_min_radius_mm: float = 150.0
 
 
 @dataclass

@@ -54,9 +54,11 @@ if [[ $DEPTH == 1 ]]; then
     # $$ stays the UI's pid after the exec below -> the helper exits when the UI does.
     scripts/run_depth.sh --watch-pid $$ >"$LOG" 2>&1 &
     ready=0
+    last_status="no answer"
     printf "   opening the D455 (takes ~10–20 s, don't press Ctrl+C) "
     for _ in $(seq 1 80); do
         st="$(curl -s --max-time 1 "$HELPER/status" || true)"
+        [[ -n "$st" ]] && last_status="$st"
         if grep -q '"has_frame": true' <<<"$st"; then ready=1; break; fi
         printf "."
         sleep 0.5
@@ -65,7 +67,7 @@ if [[ $DEPTH == 1 ]]; then
     if [[ $ready == 1 ]]; then
         ok "depth live: $st"
     else
-        warn "depth not ready after 40 s (last status: ${st:-no answer}). Last log lines:"
+        warn "depth not ready after polling (last status: $last_status). Last log lines:"
         tail -n 8 "$LOG" | sed 's/^/      /'
         warn "Fix: unplug + replug the D455, then run this script again. UI starts anyway."
     fi

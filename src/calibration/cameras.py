@@ -307,6 +307,15 @@ def capture_wrist(prims, scene, cfg: CalibrationConfig, session: Path, speed: in
 # solve + checks (no hardware: also used offline on a saved session)
 # --------------------------------------------------------------------------------------------
 
+def spans_board(ids, spec, min_corners: int = 8) -> bool:
+    """Corners spread over >= 2 rows AND >= 2 columns of the board (and enough of them). Corners on one
+    line give no board pose: 20 Nov, the new 256 mm board seen 310 mm from the wrist camera, some views
+    showed only corners 0–5 (the first row) -> NaN pose -> 'SVD did not converge' for the whole solve."""
+    ids = np.asarray(ids, int)
+    nx = spec.squares[0] - 1
+    return len(ids) >= min_corners and len(set(ids // nx)) >= 2 and len(set(ids % nx)) >= 2
+
+
 def solve(data: dict, cfg: CalibrationConfig, table_z_mm: float | None = None, session: Path | None = None) -> dict:
     g, spec = cfg.gates, cfg.board
     rep: dict = {"board": {"squares": list(spec.squares), "square_mm": spec.square_mm, "marker_mm": spec.marker_mm,
@@ -319,6 +328,11 @@ def solve(data: dict, cfg: CalibrationConfig, table_z_mm: float | None = None, s
 
     # wrist
     views = data["wrist"]["views"]
+    flat = [v for v in views if not spans_board(v["detection"]["ids"], spec)]
+    if flat:      # corners on one row/column: no board pose (NaN), and it broke the whole solve (20 Nov)
+        rep["warnings"].append(f"{len(flat)} wrist view(s) dropped: corners on one row/column "
+                               f"({', '.join(str(v.get('label', '?')) for v in flat)})")
+        views = [v for v in views if v not in flat]
     dets = [Detection.from_dict(v["detection"]) for v in views]
     rep["wrist_views"] = len(views)
     wrist = None

@@ -122,12 +122,15 @@ class Handler(BaseHTTPRequestHandler):
                     pass   # browser closed the window / switched tab
                 return
             if action == "frame.jpg":
-                jpeg = self.cameras.frame(name)
+                jpeg, metadata = self.cameras.frame_packet(name)
                 if jpeg is None:
                     self.respond(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Camera chưa có hình."})
                     return
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "image/jpeg")
+                for key, value in zip(("X-Capture-Monotonic-Ns", "X-Frame-Sequence", "X-Frame-Stream"), metadata):
+                    if value is not None:
+                        self.send_header(key, str(value))
                 self.send_header("Content-Length", str(len(jpeg)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()

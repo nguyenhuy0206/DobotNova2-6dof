@@ -1,6 +1,8 @@
 """Pure validation + safety checks. No I/O, so it is fully unit-testable."""
 from __future__ import annotations
 
+import math
+
 from common.config import JointStepLimits, SpeedLimits, WorkspaceLimits
 from common.errors import SafetyError, ValidationError
 from common.types import Feedback
@@ -26,23 +28,54 @@ def check_joints(joints: list) -> list[float]:
     return [float(v) for v in joints]
 
 
-def check_pose_in_workspace(pose: list[float], ws: WorkspaceLimits) -> None:
-    """Reject Cartesian targets (mm, base frame) outside the configured box."""
+def workspace_violations(pose: list[float], ws: WorkspaceLimits) -> dict[str, tuple[float, str]]:
+    """Every workspace limit this point breaks: {key: (by how much — mm, or degrees for the sector,
+    message)}. Empty = inside."""
     if len(pose) < 3:
         raise ValidationError("Pose phải có ít nhất X, Y, Z.")
+    out = {}
     for axis, value, (lo, hi) in zip("XYZ", pose[:3], (ws.x, ws.y, ws.z)):
         if not lo <= value <= hi:
-            raise ValidationError(f"{axis}={value:.1f} mm nằm ngoài workspace [{lo}, {hi}].")
+            key = f"{axis.lower()}_{'lo' if value < lo else 'hi'}"
+            out[key] = (lo - value if value < lo else value - hi,
+                        f"{axis}={value:.1f} mm nằm ngoài workspace [{lo}, {hi}].")
     x, y, z = (float(c) for c in pose[:3])
     r = (x * x + y * y) ** 0.5
     if ws.max_radius_mm is not None and r > ws.max_radius_mm:
-        raise ValidationError(f"{r:.0f} mm from the base axis: outside the reach limit {ws.max_radius_mm:g} mm.")
-    for k in ws.keep_out or []:
+        out["radius"] = (r - ws.max_radius_mm,
+                         f"{r:.0f} mm from the base axis: outside the reach limit {ws.max_radius_mm:g} mm.")
+    if ws.sector_deg is not None and r >= ws.sector_min_radius_mm:
+        lo, hi = ws.sector_deg
+        ang = math.degrees(math.atan2(y, x))
+        span, off = (hi - lo) % 360, (ang - lo) % 360
+        if off > span:
+            out["sector"] = (min(off - span, 360 - off),
+                             f"direction {ang:.1f}° from the base: outside the working sector "
+                             f"{lo:g}° → {hi:g}° (counter-clockwise).")
+    for i, k in enumerate(ws.keep_out or []):
         (kx, ky), zlo, zhi = k["xy"], *k.get("z", (-1e9, 1e9))
         d = ((x - kx) ** 2 + (y - ky) ** 2) ** 0.5
         if d < k["radius_mm"] and zlo <= z <= zhi:
-            raise ValidationError(f"inside the keep-out zone around {k.get('name', 'an obstacle')} "
-                                  f"({d:.0f} mm from it, keep ≥ {k['radius_mm']:g} mm).")
+            out[f"keep_out{i}"] = (k["radius_mm"] - d,
+                                   f"inside the keep-out zone around {k.get('name', 'an obstacle')} "
+                                   f"({d:.0f} mm from it, keep ≥ {k['radius_mm']:g} mm).")
+    return out
+
+
+# never tolerated on an escape path: the table floor (z_lo) keeps its own, stricter rule
+ESCAPE_TOL = {"sector": 1.0}          # degrees; everything else 5 mm
+NO_ESCAPE = {"z_lo"}
+
+
+def check_pose_in_workspace(pose: list[float], ws: WorkspaceLimits, tolerate: dict | None = None) -> None:
+    """Reject Cartesian points (mm, base frame) outside the workspace. tolerate = the violations of
+    the START of a path (workspace_violations amounts): a point on that path may break the same limit
+    by no more than the start did (+ ESCAPE_TOL), so an arm hand-guided out of the workspace can be
+    driven back in — never further out. Targets are always checked with tolerate=None."""
+    for key, (amount, message) in workspace_violations(pose, ws).items():
+        allowed = (tolerate or {}).get(key)
+        if allowed is None or key in NO_ESCAPE or amount > allowed + ESCAPE_TOL.get(key, 5.0):
+            raise ValidationError(message)
 
 
 def check_pose6(pose: list) -> list[float]:

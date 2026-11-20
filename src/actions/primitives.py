@@ -184,16 +184,17 @@ class PrimitiveSkills:
         return (self.table_z_mm + self.table.tip_clearance_mm, self.table_z_mm + self.table.flange_clearance_mm)
 
     def _check_points(self, tip: list[float], flange: list[float], where: str = "target",
-                      use_floor: bool = True) -> None:
+                      use_floor: bool = True, escape: dict | None = None) -> None:
         """Fingertip and flange inside the workspace and above the table. A 6-value tip pose is
-        checked at its lowest open fingertip."""
+        checked at its lowest open fingertip. escape: the start's violations (_escape) for points ON
+        a path that starts outside the workspace; targets are always checked in full."""
         if len(tip) >= 6:
             tip = self._lowest_tip(tip, self._rot(tip))
         ws, floors = self.cfg.workspace, (self.floor_limits() if use_floor else None)
         for name, point, zmin in (("fingertip", tip, floors and floors[0]), ("flange", flange, floors and floors[1])):
             box = ws if zmin is None else dataclasses.replace(ws, z=(zmin, ws.z[1]))
             try:
-                v.check_pose_in_workspace(point, box)
+                v.check_pose_in_workspace(point, box, (escape or {}).get(name))
             except ValidationError as exc:
                 extra = (f" (table Z={self.table_z_mm:g}; {name} must stay ≥ {zmin:g})"
                          if zmin is not None and point[2] < zmin else "")
@@ -203,10 +204,22 @@ class PrimitiveSkills:
         """Straight-line controller motion: interpolate position + rotation, check each point."""
         p0, p1 = np.array(start[:3]), np.array(end[:3])
         R0, R1 = self._rot(start), self._rot(end)
+        esc = self._escape(*self._points(p0, R0))
         for k in range(1, samples + 1):
             s = k / samples
             tip, flange = self._points(p0 + (p1 - p0) * s, interpolate_rotation(R0, R1, s))
-            self._check_points(tip, flange, "target" if k == samples else f"path {k * 100 // samples}%")
+            self._check_points(tip, flange, "target" if k == samples else f"path {k * 100 // samples}%",
+                               escape=None if k == samples else esc)
+
+    def _escape(self, tip, flange) -> dict | None:
+        """Where a path STARTS outside the workspace (20 Nov: hand-guided to the D455 — fingertip 555 mm
+        over the 530 ceiling, then at -55°, outside the working sector), the points along it may not
+        break those limits more than the start does: otherwise every move, even the way back, is
+        refused at 1 %. None when the start is inside (the normal check). The table floor is excluded."""
+        ws = self.cfg.workspace
+        out = {name: {k: amount for k, (amount, _) in v.workspace_violations(point, ws).items()}
+               for name, point in (("fingertip", tip), ("flange", flange))}
+        return out if any(out.values()) else None
 
     def _fk_points(self, joints: list[float]) -> tuple[list[float], list[float]]:
         flange = self.robot.positive_solution(joints)
@@ -219,13 +232,18 @@ class PrimitiveSkills:
             return
         span = max(abs(e - s) for s, e in zip(start, end))
         n = min(90, max(1, math.ceil(span / self.table.path_step_deg)))
+        try:
+            esc = self._escape(*self._fk_points(start))
+        except (RobotError, OSError):
+            esc = None
         for k in range(1, n + 1):
             joints = [s + (e - s) * k / n for s, e in zip(start, end)]
             try:
                 tip, flange = self._fk_points(joints)
             except (RobotError, OSError) as exc:
                 raise SafetyError(f"Cannot check the joint path against the table (no FK: {exc}).") from None
-            self._check_points(tip, flange, "target" if k == n else f"joint path {k * 100 // n}%")
+            self._check_points(tip, flange, "target" if k == n else f"joint path {k * 100 // n}%",
+                               escape=None if k == n else esc)
 
     # -- self-collision: gripper vs the robot's own elbow / arm (actions/self_collision.py) -----
     def _self_check_on(self, fb: Feedback) -> bool:

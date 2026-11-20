@@ -211,3 +211,15 @@ def test_archive_moves_a_replaced_file_out_of_memory(tmp_path, monkeypatch):
     f.write_text("{}")
     assert paths.archive(f, tag="20261118-164219").name == "hand_eye_env.20261118-164219-1.json"   # never overwrites
     assert paths.archive(f) is None                                                                   # nothing left to move
+
+
+def test_views_with_corners_on_one_line_are_dropped():
+    """20 Nov: wrist views of the new 256 mm board showing only corners 0–5 (one row) gave a NaN pose and
+    'SVD did not converge' for the whole solve."""
+    from calibration.board import BoardSpec
+    from calibration.cameras import spans_board
+    spec = BoardSpec(squares=(7, 5), square_mm=36.5, marker_mm=26.0, dictionary="DICT_5X5_100")
+    assert not spans_board([0, 1, 2, 3, 4, 5], spec)                    # first row only
+    assert not spans_board([0, 6, 12, 18], spec)                        # one column (and too few)
+    assert not spans_board([0, 1, 6], spec)                             # too few corners
+    assert spans_board([0, 1, 2, 3, 8, 9, 10, 11], spec)                # two rows, four columns

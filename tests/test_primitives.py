@@ -1,3 +1,4 @@
+import math
 """Primitive skills against the simulated Nova 2."""
 import pytest
 
@@ -153,3 +154,33 @@ def test_speed_cap_clamps(gripper_prims, sim):
     from actions.registry import build_registry
     spec = next(s for s in build_registry(gripper_prims) if s.name == "move_to_pose")
     assert spec.parameters["properties"]["speed"]["maximum"] == 10
+
+
+def test_a_path_from_above_the_ceiling_may_come_down_but_not_go_higher(prims):
+    """20 Nov: hand-guided to the D455 (fingertip 555 mm, ceiling 530): go_to_position 'start' was refused
+    at 'joint path 1%' — every move, even the way down, started above the ceiling."""
+    import dataclasses
+    prims.cfg.workspace = dataclasses.replace(prims.cfg.workspace, z=(0, 530), sector_deg=None, keep_out=[])
+    down = [-300, -400, 400, 180, 0, 0]
+    prims._check_linear_path([-300, -400, 700, 180, 0, 0], down)            # flange 700 -> 400: allowed
+    with pytest.raises(ValidationError, match="Z="):
+        prims._check_linear_path([-300, -400, 700, 180, 0, 0], [-300, -400, 760, 180, 0, 0])   # higher: no
+    with pytest.raises(ValidationError, match="target"):
+        prims._check_linear_path([-300, -400, 700, 180, 0, 0], [-300, -400, 650, 180, 0, 0])   # still above
+    with pytest.raises(ValidationError, match="path"):
+        prims._check_linear_path([-300, -400, 500, 180, 0, 0], [-300, -400, 700, 180, 0, 0])   # from under: normal
+    assert prims._escape([-300, -400, 380], [-300, -400, 507]) is None                         # inside: no escape
+
+
+def test_a_path_from_outside_the_working_sector_may_only_come_back(prims):
+    """20 Nov, after the D455 touches: fingertip at -55° (sector 167.8° -> -92.9°): go_to_position refused at
+    'joint path 1%'. Turning back toward the sector is allowed, turning further away is not."""
+    import dataclasses
+    prims.cfg.workspace = dataclasses.replace(prims.cfg.workspace, z=(0, 530), sector_deg=(167.8, -92.9),
+                                              keep_out=[], max_radius_mm=690)
+    at = lambda deg, z=400: [500 * math.cos(math.radians(deg)), 500 * math.sin(math.radians(deg)), z, 180, 0, 0]
+    prims._check_linear_path(at(-55), at(-120))                    # back into the sector: allowed
+    with pytest.raises(ValidationError, match="working sector"):
+        prims._check_linear_path(at(-55), at(-20))                 # further out: refused on the path
+    with pytest.raises(ValidationError, match="target"):
+        prims._check_linear_path(at(-55), at(-80))                 # nearer, but the target is still outside

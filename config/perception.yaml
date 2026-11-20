@@ -4,13 +4,13 @@
 # Tune with real lighting: scripts/calibrate.sh colors saves the masks.
 colors:
   red:    [[[0, 120, 70], [10, 255, 255]], [[170, 120, 70], [179, 255, 255]]]
-  orange: [[[11, 130, 120], [22, 255, 255]]]          # between red (0–10) and yellow (20–35)
+  orange: [[[11, 130, 120], [19, 255, 255]]]          # between red (0–10) and yellow (20–35); 20 Nov: yellow cubes H 22–24 were also 'orange' up to 22
   green:  [[[40, 80, 60], [85, 255, 255]]]
-  blue:   [[[95, 120, 60], [130, 255, 255]]]
+  blue:   [[[95, 160, 60], [130, 255, 255]]]          # S >= 160 (20 Nov): cubes S 201–227; robot arm cover / laptop S 131–135
   yellow: [[[20, 100, 100], [35, 255, 255]]]
   white:  [[[0, 0, 200], [179, 40, 255]]]
 
-min_area_px: 50           # blocks on the box are ~70–220 px in the 640×480 D455 view
+min_area_px: 35           # blocks on the box: 53–220 px in the 640x480 D455 view from its 20 Nov place (was 50: the far blue cube dropped out 4 of 5 looks)
 depth_window_px: 5        # median depth over a (2n+1)^2 window around the object centre
 
 env_helper_url: http://127.0.0.1:8766   # D455 colour+depth (scripts/run_ui.sh --depth)
@@ -24,11 +24,15 @@ image_max_width: 640
 
 # Camera calibration from the ChArUco board (scripts/calibrate.sh cameras; src/calibration/).
 calibration:
-  board:                       # measured on the print (A4 PDF printed portrait, scaled): NOT the PDF numbers
+  board:                       # measured on the print: NOT the PDF numbers
+    # 20 Nov: new, larger print (the old 20.85 mm board was ~70 px wide in the D455 640x480 view from its new
+    # place: markers ~5 px, 0 corners). Operator: 7 squares = 25.6 cm (36.6 mm), 5 = 17.9 cm (35.8), square
+    # "3.5", marker 2.6 cm. D455 depth vs board pose (10 frames, 19–22 corners, 0.2 px): square 36.4 mm.
     squares: [7, 5]
-    square_mm: 20.85           # 7 squares = 14.6 cm, 5 squares = 10.4 cm
-    marker_mm: 15.0
+    square_mm: 36.5
+    marker_mm: 26.0
     dictionary: DICT_5X5_100
+    # (18 Nov board, retired: square_mm 20.85, marker_mm 15.0 — 7 squares = 14.6 cm)
   measured:                    # only to sanity-check a solve; update when things move
     # 18 Nov: 443.8 mm from the right edge of the robot base to the right edge of the board (edge to edge,
     # tape). The check compares base AXIS -> board CENTRE, so it is not entered here; the solve gave
@@ -36,5 +40,17 @@ calibration:
     tolerance_mm: 40
     # D455 moved on 18 Nov so it sees the board: measure again, then add
     #   env_cam_to_base_mm (horizontal), env_cam_height_mm (lens above the table), env_cam_to_board_mm
+    # 20 Nov, operator tape (new view).
+    #   D455 and the robot base are opposite corners of a 370 x 600 mm rectangle -> 705 mm horizontal
+    #   (robot base 100 x 100 mm). D455 600-620 mm above the table, tilted down ~40-45 deg.
+    #   New board (corner = outer tip of the nearest black square): D455 base -> that corner 440 x 40 mm
+    #   (442 mm); robot base outer corner nearest the board -> board corner 380 x 63 mm (385 mm). Corners, not
+    #   centres: not entered as checks.
+    # The tape numbers (705 / 610) are to the mount, not the lens: the 20 Nov solve put the lens at 642 mm /
+    # 513 mm, and the robot's own touches on the D455 body (keep-out survey: contacts z 492–524, centre 663 mm
+    # from the base axis, lens on the side facing the robot) agree with the solve, not with the tape.
+    # Checks from the touches instead:
+    env_cam_to_base_mm: 645
+    env_cam_height_mm: 510
     wrist_cam_offset_mm: 122   # wrist camera off the tool axis: bracket 57 + 65 to the camera base (camera
                                # sits ~70 mm above that base), tape 18 Nov (warning only)

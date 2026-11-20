@@ -70,6 +70,7 @@ class CameraStream:
         self._jpeg: bytes | None = None
         self._image: np.ndarray | None = None
         self._seq = 0
+        self._frame_metadata = (None, None, None)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._last_access = 0.0
@@ -89,6 +90,12 @@ class CameraStream:
     def latest_jpeg(self) -> bytes | None:
         self.touch()
         return self._jpeg
+
+    def latest_packet(self) -> tuple[bytes | None, tuple]:
+        """Atomically pair encoded pixels with their original capture provenance."""
+        self.touch()
+        with self._cond:
+            return self._jpeg, self._frame_metadata
 
     def latest_image(self) -> np.ndarray | None:
         self.touch()
@@ -189,6 +196,7 @@ class CameraStream:
                 self.measured_fps, window_start, frames = frames / (now - window_start), now, 0
             with self._cond:
                 self._jpeg, self._image = buf.tobytes(), frame.color
+                self._frame_metadata = (frame.captured_ns, frame.sequence_id, frame.stream_id)
                 self.resolution = (frame.color.shape[1], frame.color.shape[0])
                 self.error = None
                 self._seq += 1

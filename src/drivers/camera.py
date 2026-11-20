@@ -9,6 +9,8 @@ For a full device/bandwidth benchmark use ``scripts/dev/camera_benchmark.py``.
 from __future__ import annotations
 
 import sys
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,12 +35,17 @@ class Frame:
     depth_m: np.ndarray | None = None  # HxW float32 metres, aligned to colour
     intrinsics: Intrinsics | None = None
     timestamp_ms: float = 0.0
+    captured_ns: int | None = None     # host monotonic acquisition time, never HTTP receipt time
+    sequence_id: int | None = None
+    stream_id: str | None = None       # changes when the producer is reopened
 
 
 class OpenCVCamera:
     def __init__(self, index: int = 0, width: int = 1280, height: int = 720, fps: int = 30):
         import cv2
         self._cv2 = cv2
+        self._stream_id, self._sequence = uuid.uuid4().hex, 0
+        self._grab_ns = None
         backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
         self.cap = cv2.VideoCapture(index, backend)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -49,19 +56,26 @@ class OpenCVCamera:
 
     def grab(self) -> bool:
         """Pull the next frame off the driver without decoding (keeps latency low)."""
-        return self.cap.grab()
+        ok = self.cap.grab()
+        self._grab_ns = time.monotonic_ns() if ok else None
+        return ok
 
     def retrieve(self) -> Frame:
         ok, image = self.cap.retrieve()
         if not ok or image is None:
             raise RobotError("OpenCV camera returned no frame")
-        return Frame(color=image, timestamp_ms=self.cap.get(self._cv2.CAP_PROP_POS_MSEC))
+        self._sequence += 1
+        return Frame(color=image, timestamp_ms=self.cap.get(self._cv2.CAP_PROP_POS_MSEC),
+                     captured_ns=self._grab_ns, sequence_id=self._sequence, stream_id=self._stream_id)
 
     def read(self) -> Frame:
         ok, image = self.cap.read()
+        captured_ns = time.monotonic_ns()
         if not ok:
             raise RobotError("OpenCV camera returned no frame")
-        return Frame(color=image, timestamp_ms=self.cap.get(self._cv2.CAP_PROP_POS_MSEC))
+        self._sequence += 1
+        return Frame(color=image, timestamp_ms=self.cap.get(self._cv2.CAP_PROP_POS_MSEC),
+                     captured_ns=captured_ns, sequence_id=self._sequence, stream_id=self._stream_id)
 
     def close(self) -> None:
         self.cap.release()
@@ -91,11 +105,15 @@ def import_pyrealsense2():
 
 class RealSenseCamera:
     # Tried in order. USB 2 (480 Mb/s) cannot carry colour+depth above ~640x480@15.
-    FALLBACK_PROFILES = [(848, 480, 30), (640, 480, 15), (640, 480, 6), (424, 240, 15)]
+    # 1280x720 first: on 20 Nov the board was ~70 px wide at 640x480 from the new D455 place (markers ~5 px,
+    # unreadable). On USB 2.0 (480 Mb/s) only the low rates can work; the next profile is tried on failure.
+    FALLBACK_PROFILES = [(1280, 720, 15), (1280, 720, 6), (848, 480, 30), (848, 480, 15), (640, 480, 15),
+                         (640, 480, 6), (424, 240, 15)]
 
     def __init__(self, width: int = 848, height: int = 480, fps: int = 30, serial: str | None = None):
         rs = import_pyrealsense2()
         self._rs = rs
+        self._stream_id = uuid.uuid4().hex
         errors = []
         for w, h, f in [(width, height, fps)] + [p for p in self.FALLBACK_PROFILES if p != (width, height, fps)]:
             pipeline, config = rs.pipeline(), rs.config()
@@ -122,13 +140,16 @@ class RealSenseCamera:
         self.intrinsics = Intrinsics(i.width, i.height, i.fx, i.fy, i.ppx, i.ppy)
 
     def read(self) -> Frame:
-        frames = self.align.process(self.pipeline.wait_for_frames())
+        frames = self.pipeline.wait_for_frames()
+        captured_ns = time.monotonic_ns()
+        frames = self.align.process(frames)
         color, depth = frames.get_color_frame(), frames.get_depth_frame()
         if not color or not depth:
             raise RobotError("RealSense returned an incomplete frameset")
         depth_m = np.asanyarray(depth.get_data()).astype(np.float32) * self.depth_scale
         return Frame(color=np.asanyarray(color.get_data()).copy(), depth_m=depth_m,
-                     intrinsics=self.intrinsics, timestamp_ms=color.get_timestamp())
+                     intrinsics=self.intrinsics, timestamp_ms=color.get_timestamp(), captured_ns=captured_ns,
+                     sequence_id=int(color.get_frame_number()), stream_id=self._stream_id)
 
     def close(self) -> None:
         self.pipeline.stop()
@@ -175,7 +196,10 @@ class RealSenseRemoteCamera:
         k = data["intrinsics"]
         intr = Intrinsics(int(k[0]), int(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5]))
         return Frame(color=color, depth_m=data["depth_mm"].astype(np.float32) / 1000.0,
-                     intrinsics=intr, timestamp_ms=float(data["timestamp_ms"]))
+                     intrinsics=intr, timestamp_ms=float(data["timestamp_ms"]),
+                     captured_ns=int(data["captured_ns"]) if "captured_ns" in data and int(data["captured_ns"]) >= 0 else None,
+                     sequence_id=int(data["sequence_id"]) if "sequence_id" in data and int(data["sequence_id"]) >= 0 else None,
+                     stream_id=str(data["stream_id"]) if "stream_id" in data else None)
 
     def close(self) -> None:
         pass

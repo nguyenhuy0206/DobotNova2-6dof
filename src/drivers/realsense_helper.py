@@ -41,7 +41,10 @@ def pack_frame(frame, jpeg_quality: int = 85) -> bytes:
     intr = np.array([i.width, i.height, i.fx, i.fy, i.cx, i.cy] if i else [0, 0, 0, 0, 0, 0], np.float64)
     buf = io.BytesIO()
     np.savez(buf, color_jpeg=jpeg.reshape(-1), depth_mm=depth_mm, intrinsics=intr,
-             timestamp_ms=np.float64(frame.timestamp_ms))
+             timestamp_ms=np.float64(frame.timestamp_ms),
+             captured_ns=np.int64(frame.captured_ns if frame.captured_ns is not None else -1),
+             sequence_id=np.int64(frame.sequence_id if frame.sequence_id is not None else -1),
+             stream_id=np.str_(frame.stream_id or ""))
     return buf.getvalue()
 
 
@@ -108,12 +111,17 @@ def make_handler(source: FrameSource):
             log.debug(fmt, *args)
 
         def _send(self, status, body: bytes, content_type: str):
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # Polling clients may time out while the camera is opening.
+                # Keep their disconnects from hiding the actual camera error.
+                self.close_connection = True
 
         def do_GET(self):
             if self.path == "/frame":
@@ -162,9 +170,9 @@ def main() -> None:
 
     p = argparse.ArgumentParser(description="RealSense D455 depth helper (run as root on macOS)")
     p.add_argument("--port", type=int, default=8766)
-    p.add_argument("--width", type=int, default=848)
-    p.add_argument("--height", type=int, default=480)
-    p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--width", type=int, default=1280)
+    p.add_argument("--height", type=int, default=720)
+    p.add_argument("--fps", type=int, default=15)
     p.add_argument("--watch-pid", type=int, help="exit when this process exits (used by run_ui.sh --depth)")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")

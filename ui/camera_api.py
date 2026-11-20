@@ -42,6 +42,9 @@ class CameraAPI:
     def frame(self, name: str) -> bytes | None:
         return self._stream(name).latest_jpeg()
 
+    def frame_packet(self, name: str) -> tuple:
+        return self._stream(name).latest_packet()
+
     @staticmethod
     def placeholder(message: str) -> bytes:
         """Dark 'no signal' frame with the camera's error, so the window explains itself."""
