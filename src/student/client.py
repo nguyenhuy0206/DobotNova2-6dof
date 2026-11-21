@@ -6,7 +6,7 @@ returns an object the harness reads like a Responses-API response (`id`, `output
 Mac, and APC prefix caching — the system prompt + tools are identical every turn, so after the
 first request only the new part of the prompt is computed (~2 s instead of ~15 s).
 
-Images are left out by default (positions come from `look`'s detections).
+Images are left out by default (text-only student; look has no detections, 20 Nov).
 """
 from __future__ import annotations
 

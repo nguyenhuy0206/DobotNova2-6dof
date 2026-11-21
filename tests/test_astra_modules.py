@@ -5,10 +5,10 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from actions.skill_runner import SkillRunner, fill
+from actions.skill_runner import fill
 from agent.harness import AgentHarness
 from agent.toolkit import build_toolkit
-from common.config import AgentConfig, PerceptionConfig, RobotConfig
+from common.config import AgentConfig, PerceptionConfig
 from common.errors import ValidationError
 from drivers.camera import Frame, Intrinsics
 from memory.skills import SkillLibrary
@@ -208,10 +208,10 @@ def test_calibration_solves_unknown_marker_offset_and_flags_outlier():
         cams.append((inv @ np.append(marker_m, 1))[:3] + rng.normal(0, 0.001, 3))
         poses.append(pose)
     cams[5] = cams[5] + 0.03                              # one bad point (30 mm)
-    T, offset, rms, errors = solve_with_marker_offset(cams, poses, (0, 0, 100))
+    T, offset, rms, errors = solve_with_marker_offset(cams, poses)
     assert outliers(errors) == [5]
     keep = [i for i in range(12) if i != 5]
-    T, offset, rms, _ = solve_with_marker_offset([cams[i] for i in keep], [poses[i] for i in keep], offset)
+    T, offset, rms, _ = solve_with_marker_offset([cams[i] for i in keep], [poses[i] for i in keep])
     assert rms < 3 and np.allclose(offset, true_offset, atol=5)
     # What matters is accuracy where objects are (not at the camera itself):
     work = np.array([[x, y, z] for x in (-0.6, -0.5) for y in (-0.4, -0.1) for z in (0.0, 0.2)])
@@ -348,5 +348,6 @@ def test_wrist_overlay_marks_the_fingertips_where_the_rigid_camera_sees_them(tmp
 def test_routines_and_skills_may_use_depth_at():
     """20 Nov: look no longer detects; without depth_at Astra's own code could not locate anything."""
     from actions import astra_code, skill_runner
-    assert "depth_at" in astra_code.SKILL_TOOLS and "depth_at" in skill_runner.SKILL_TOOLS
+    assert astra_code.SKILL_TOOLS is skill_runner.SKILL_TOOLS
+    assert "depth_at" in astra_code.SKILL_TOOLS
     assert hasattr(astra_code.RoutineContext, "depth_at")

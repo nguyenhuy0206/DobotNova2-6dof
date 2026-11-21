@@ -6,8 +6,8 @@
 
 Variants (config: harness.variant, see HarnessOptions.from_variant):
   V0 baseline     previous_response_id chain, every image, every proposed call runs
-  V1 compression  bounded context (state + digest + last turns), selective images
-  V2 chunking     baseline context, adaptive action horizon (agent/chunking.py)
+  V1 compression  bounded context (state + digest + last turns), per-camera image detail
+  V2 chunking     baseline context, free or strict action chunks (agent/chunking.py)
   V3 combined     V1 + V2
 Safety never depends on the variant: every action still goes through the executor
 and the primitives' checks. Every step and every model request's token usage is
@@ -43,7 +43,8 @@ DEFAULT_INSTRUCTIONS = (
     "Perceive before acting: look returns camera pictures; depth_at gives the D455 depth and robot "
     "coordinates (base_xyz_mm) at pixels of the last env picture; get_state before moving. Prefer existing skills (list_skills, run_skill) "
     "over long chains of primitives. After a task succeeds, verify with look, then save_skill "
-    "the sequence that worked. Use conservative speeds. If a tool returns an error, do not retry "
+    "the sequence that worked. Motion speed follows the operator's fixed_speed or max_speed setting. "
+    "If a tool returns an error, do not retry "
     "blindly: call get_state and look, then explain or adjust."
     " Poses are FINGERTIP positions (the gripper length is handled for you). To work on an object, "
     "point the gripper straight down (rx=180, ry=0)."
@@ -322,8 +323,7 @@ class AgentHarness:
         repeats, repeat_stop = RepeatGuard(opt.max_repeats), None
         robot_stopped = None              # a move the safety layer stopped: the episode ends, no further model turn
         held: dict = {}                     # the current grasp: z when caught, whether its image was taken
-        images_policy = ImagePolicy(**{k: getattr(opt.images, k) for k in ("mode", "env_detail", "wrist_detail",
-                                                                           "same_threshold")})
+        images_policy = opt.images
         tools = to_openai_tools(self.executor.list())
         # The Responses API does NOT carry `instructions` over through previous_response_id,
         # so they are sent with every call (identical text -> served from the prompt cache).
@@ -414,10 +414,8 @@ class AgentHarness:
                 events = router.classify(call.name, call.parsed_args, result)
                 if image is not None and self.send_images:
                     camera = (result.get("result") or {}).get("camera")
-                    send, img_reason = images_policy.decide(call.parsed_args, result.get("result") or {},
-                                                            router.wants_image(camera))
+                    send, img_reason = images_policy.decide(call.parsed_args)
                     if send:
-                        images_policy.sent(camera, image)
                         router.image_delivered(camera)
                         sent_images.append((image, camera))
                     else:
@@ -471,7 +469,6 @@ class AgentHarness:
                     self.episodes.append(episode, {"event": "tool", "step": step, "name": "look", "auto": True,
                                                    "args": {"camera": camera, "colors": colors}, "result": r})
                     if img is not None:
-                        images_policy.sent(camera, img)
                         sent_images.append((img, camera))
                         r["result"]["image"] = "attached (taken by the harness after the unexpected event)"
                     auto.append((f"look[auto:{camera}]", {"camera": camera}, r))

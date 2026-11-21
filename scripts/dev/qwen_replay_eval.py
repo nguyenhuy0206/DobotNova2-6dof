@@ -15,12 +15,12 @@ from __future__ import annotations
 import argparse
 import collections
 import json
-import re
 import sys
 import time
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
+from student.context import parse_calls
 
 EPISODES = ["20261117-165638-c1c822", "20261117-172537-5f5c16", "20261117-173052-a287ec",
             "20261117-173616-86e54e", "20261118-164411-bda29f", "20261118-171824-339d3a"]
@@ -30,22 +30,6 @@ CATEGORY = {"look": "see", "find_objects": "see", "get_state": "see", "check_rob
             "move_to_pose": "move", "move_relative": "move", "move_to_joints": "move", "jog_joint": "move",
             "go_to_position": "move", "run_routine": "move", "run_skill": "move",
             "open_gripper": "grip", "close_gripper": "grip"}
-
-
-def parse_calls(text: str) -> list[dict]:
-    out = []
-    for block in re.findall(r"<tool_call>(.*?)</tool_call>", text, re.S):
-        m = re.search(r"<function=([\w.-]+)>(.*?)</function>", block, re.S)
-        if m:
-            args = {k: v.strip() for k, v in re.findall(r"<parameter=(\w+)>(.*?)</parameter>", m.group(2), re.S)}
-            out.append({"name": m.group(1), "arguments": args})
-            continue
-        try:
-            j = json.loads(block.strip())
-            out.append({"name": j.get("name"), "arguments": j.get("arguments") or {}})
-        except ValueError:
-            pass
-    return out
 
 
 def coerce(args: dict, schema: dict) -> dict:

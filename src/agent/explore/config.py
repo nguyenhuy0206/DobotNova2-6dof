@@ -21,9 +21,7 @@ class ViewGuardConfig:
 @dataclass
 class SkillPolicy:
     require_validation: bool = True       # candidate skills run live only with operator approval
-    min_supervised_successes: int = 2     # for --promote
     builtin_pick_place: bool = True       # add pick_block_wrist / place_block_on_table if missing
-    auto_promote_after: int = 0           # autonomous (require_validation false): promote after N verified successes
 
 @dataclass
 class DiagnosisPolicy:

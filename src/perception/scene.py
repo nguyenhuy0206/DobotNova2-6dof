@@ -1,8 +1,9 @@
-"""What the agent sees: camera frames -> objects with robot-base coordinates.
+"""Camera pictures and pixel depth for Astra; colour detections for local helpers.
 
     scene = Scene.from_config()
     scene.find("red")       -> [SceneObject(label="red", base_xyz_mm=[x, y, z], ...)]
-    scene.look("env")       -> {"objects": [...], "image_jpeg_b64": "..."}
+    scene.look("env")       -> {"image_size": [w, h], "image_jpeg_b64": "...", ...}
+    scene.depth_at([[u, v]]) -> {"points": [{"depth_mm": ..., "base_xyz_mm": ..., ...}], ...}
 
 Frame sources (no camera is opened here, so it never fights the UI for a device):
   * env   -> D455 depth helper (colour + aligned depth + intrinsics)   scripts/run_ui.sh --depth
@@ -186,8 +187,7 @@ class Scene:
         objects in the image itself). zoom=[x, y, w, h] (full-image pixels) returns that region enlarged.
         The frame is kept so depth_at answers for exactly the pixels of this picture."""
         frame = self.observe(camera)
-        if camera == "env" and frame.depth_m is not None and self.depth_frames > 1:
-            frame = self._median_depth(camera, frame)
+        # 20 Nov: temporal averaging was useless (cube depth noise ±0–1.3 mm); keep this frame's depth.
         self.last_frames[camera] = (frame, time.time())
         h, w = frame.color.shape[:2]
         result = {"camera": camera, "image_size": [w, h], "has_depth": frame.depth_m is not None,
@@ -217,27 +217,6 @@ class Scene:
         else:
             result["image_jpeg_b64"] = self.encode_image(picture, [])
         return result
-
-    depth_frames = 1          # env look: per-pixel median over N frames. 20 Nov: frame-to-frame noise is only
-                              # ±0–1.3 mm on the cubes; the error is systematic, so 1 (no extra frames)
-
-    def _median_depth(self, camera: str, frame):
-        """The picture's frame with its depth replaced by the per-pixel median over depth_frames frames
-        (zeros = no depth are ignored). 20 Nov: single-frame D455 depth moved the same cube by ±5 mm."""
-        from dataclasses import replace
-        stack = [frame.depth_m]
-        for _ in range(self.depth_frames - 1):
-            try:
-                f = self.observe(camera)
-            except Exception:  # noqa: BLE001 — fewer frames, still a median
-                break
-            if f.depth_m is not None and f.depth_m.shape == frame.depth_m.shape:
-                stack.append(f.depth_m)
-        d = np.stack(stack).astype(np.float32)
-        d[~np.isfinite(d) | (d <= 0)] = np.nan
-        with np.errstate(all="ignore"):
-            med = np.nanmedian(d, axis=0)
-        return replace(frame, depth_m=np.nan_to_num(med, nan=0.0).astype(np.float32))
 
     def depth_at(self, pixels: list, window_px: int = 2, plane_z: float | None = None) -> dict:
         """Depth of the env camera at the given pixels of the LAST env look (same frame as that picture):

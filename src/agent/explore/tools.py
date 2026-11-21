@@ -24,7 +24,8 @@ def explore_specs(guard: RobotViewGuard | None, notes: NotesStore, library: Skil
     if library is not None:
         specs += [
             ActionSpec("rollback_skill",
-                       "Restore an earlier version of a skill as its newest version (when a revision made it worse). "
+                       "Restore an earlier version of a skill as its newest candidate version; operator ledger review "
+                       "is required to validate it. "
                        "list_skills {name} shows the versions and their success/failure counts.",
                        library.rollback, _obj({"name": {"type": "string"}, "version": {"type": "integer", "minimum": 1}},
                                               ["name", "version"])),

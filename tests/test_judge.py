@@ -3,7 +3,7 @@ import hashlib
 import json
 import runpy
 import time
-from dataclasses import FrozenInstanceError, asdict, replace
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -18,8 +18,8 @@ from judge.engine import JudgeSession
 from judge.harness import HarnessJudge
 from judge.ledger import JudgeLedger
 from judge.predicates import evidence_gate, grasp_aligned, held_after_lift, placed_on_table
-from judge.records import Evidence, Observation, PredicateResult, public_feedback
-from judge.spec import DEFAULT_SPEC, digest, load_spec
+from judge.records import Evidence, Observation, public_feedback
+from judge.spec import DEFAULT_SPEC, load_spec
 from memory.skills import Skill, SkillLibrary
 from memory.store import EpisodeStore
 
@@ -292,14 +292,19 @@ def test_operator_promotion_requires_matching_ledger_and_rollback_loses_trust(sp
     library = SkillLibrary(tmp_path / "skills.json")
     library.revise(Skill("pick", "pick", steps=[{"tool": "close_gripper"}]))
     library.add_evidence("pick", True, True)
-    assert library.auto_promote("pick", 1) is None
+    assert library.get("pick").validation_status == "candidate"
     assert not library.promote("pick", 1, ledger=ledger)["promoted"]
     session, ev = completed_session(spec, evidence, ledger)
     session.skill_dependency_hash = library.dependency_hash("pick")
     final = session.evaluate("episode_end", 4*S, ev)
-    assert library.promote("pick", 1, evaluation_ids=[final.evaluation_id], ledger=ledger)["promoted"]
+    assert not library.promote("pick", evaluation_ids=[final.evaluation_id] * 2, ledger=ledger)["promoted"]
+    second, ev = completed_session(spec, evidence, ledger, episode="second")
+    second.skill_dependency_hash = library.dependency_hash("pick")
+    other = second.evaluate("episode_end", 4*S, ev)
+    citations = [final.evaluation_id, other.evaluation_id]
+    assert library.promote("pick", evaluation_ids=citations, ledger=ledger)["promoted"]
     library.revise(Skill("pick", "changed", steps=[{"tool": "open_gripper"}]))
-    assert not library.promote("pick", 1, evaluation_ids=[final.evaluation_id], ledger=ledger)["promoted"]
+    assert not library.promote("pick", evaluation_ids=citations, ledger=ledger)["promoted"]
     assert library.rollback("pick", 1)["validation_status"] == "candidate"
 
 

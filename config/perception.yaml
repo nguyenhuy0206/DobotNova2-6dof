@@ -1,4 +1,4 @@
-# Perception used by the Astra tools (look, find_objects) and camera calibration.
+# Camera pictures/depth for Astra; HSV detection for judge, calibration, routine helpers and find_objects.
 
 # OpenCV HSV ranges per colour (H 0–179, S/V 0–255). Red wraps around 0 -> two ranges.
 # Tune with real lighting: scripts/calibrate.sh colors saves the masks.

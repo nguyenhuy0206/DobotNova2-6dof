@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Astra explores the cell and learns to pick the blocks (config/explore.yaml).
 
-    scripts/run_explore.sh                     run the task from explore.yaml (live, ≤10 % speed)
+    scripts/run_explore.sh                     run the task from explore.yaml (live, fixed 50 % speed)
     scripts/run_explore.sh --mode confirm      ask y/N before every motion
     scripts/run_explore.sh "custom task text"
     scripts/run_explore.sh --episodes 5        5 attempts; after each Astra reviews it and updates skills/notes
@@ -66,9 +66,12 @@ def main() -> None:
         review(s, args.review)
         return
     o = s.harness.options
-    print(f"Astra explore · {a.model} · mode {a.execution_mode} · max speed {a.max_speed}% · "
+    speed = f"fixed speed {a.fixed_speed}%" if a.fixed_speed else f"max speed {a.max_speed}%"
+    chunks = (f"free (≤{o.chunk.max_calls} calls, ≤{o.chunk.max_horizon} motions)" if o.chunk.free else
+              f"L≤{o.chunk.max_horizon}") if o.chunk.enabled else "off"
+    print(f"Astra explore · {a.model} · mode {a.execution_mode} · {speed} · "
           f"max {a.max_steps} model calls · harness {o.variant} (context {o.context.mode}, chunks "
-          f"{'L≤%d' % o.chunk.max_horizon if o.chunk.enabled else 'off'}, images {o.images.mode}, "
+          f"{chunks}, images {o.images.mode}, "
           f"budget {o.max_episode_tokens or '∞'} tokens)")
     print(f"  active tool offset {[round(x, 1) for x in p.active_tool_offset]} mm ({p.tool_offset_source})")
     print(f"  table z {p.table_z_mm} mm · grip closes to {p.grip_close_position}/1000 · "
@@ -160,7 +163,7 @@ def skill_admin(args) -> None:
     cfg = load_explore_config()
     lib = SkillLibrary(REPO_ROOT / cfg.skills_file)
     if args.promote:
-        print(lib.promote(args.promote, cfg.skills.min_supervised_successes, evaluation_ids=args.ledger_entry))
+        print(lib.promote(args.promote, evaluation_ids=args.ledger_entry))
     if args.rollback:
         print(lib.rollback(args.rollback[0], int(args.rollback[1])))
     _print_skills(lib.all())

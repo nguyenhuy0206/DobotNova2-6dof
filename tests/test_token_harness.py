@@ -1,4 +1,4 @@
-"""Token-efficient harness: accounting, bounded context, chunking, selective images,
+"""Token-efficient harness: accounting, bounded context, chunking, camera images,
 event router, local skill executor with validation gate. Mocks only — no network,
 no robot."""
 import json
@@ -173,27 +173,15 @@ def test_chunk_aborts_after_error(prims, tmp_path):
     assert h.last_metrics["actions_deferred"] == 2
 
 
-# ---------------------------------------------------------------- Phase 3: selective vision
-def _jpeg(v):
-    import base64
-
-    import cv2
-    import numpy as np
-    return base64.b64encode(cv2.imencode(".jpg", np.full((40, 40, 3), v, np.uint8))[1]).decode()
-
-
-def test_image_policy_first_then_only_when_useful():
-    pol = ImagePolicy()
-    res = {"camera": "wrist", "objects": [{"label": "green"}], "image_jpeg_b64": _jpeg(100)}
-    assert pol.decide({"colors": ["green"]}, res, False)[0]
-    pol.sent("wrist", res["image_jpeg_b64"])
-    res2 = {**res, "image_jpeg_b64": _jpeg(180)}
-    assert not pol.decide({"colors": ["green"]}, res2, False)[0]               # clear detection: data only
-    assert pol.decide({"colors": ["green"], "image": "always"}, res2, False)[0]
-    assert pol.decide({"colors": ["green"]}, res2, True)[0]                    # after a failed grasp
-    assert not pol.decide({"colors": ["green"]}, {**res}, True)[0]             # identical to the one sent
-    assert pol.decide({"colors": ["blue"]}, res2, False)[0]                    # requested colour missing
-    assert ImagePolicy(mode="all").decide({}, res, False)[0]
+# ---------------------------------------------------------------- Phase 3: camera images
+@pytest.mark.parametrize("mode", ["selective", "all"])
+def test_image_policy_delivers_every_picture_unless_suppressed(mode):
+    pol = ImagePolicy(mode=mode, env_detail="high", wrist_detail="low")
+    for _ in range(2):
+        assert pol.decide({})[0]                         # repeated looks still carry the picture
+    assert pol.decide({"image": "always"})[0]
+    assert not pol.decide({"image": "never"})[0]
+    assert pol.detail("env") == "high" and pol.detail("wrist") == "low"
 
 
 # ---------------------------------------------------------------- Phase 6: events
@@ -237,7 +225,7 @@ def test_candidate_skill_needs_operator(runner, sim):
     assert ev[-1]["supervised"] and ev[-1]["claim"]["ok"]
 
 
-def test_promotion_needs_supervised_successes_and_rollback(runner):
+def test_supervised_claims_cannot_promote_and_rollback_is_untrusted(runner):
     runner.supervisor = lambda name, params: True
     lib = runner.library
     runner.run("up")
@@ -409,13 +397,6 @@ def test_wrist_reads_a_fresh_frame_before_saying_not_seen():
     assert local.check("wrist_sees", {}, color="green")["ok"]
 
 
-def test_small_specks_are_not_ambiguous_duplicates():
-    from agent.vision import _ambiguous_duplicates
-    assert not _ambiguous_duplicates([{"label": "blue", "area_px": 232}, {"label": "blue", "area_px": 52},
-                                      {"label": "white", "area_px": 600}, {"label": "white", "area_px": 80}])
-    assert _ambiguous_duplicates([{"label": "green", "area_px": 9000}, {"label": "green", "area_px": 5000}])
-
-
 def test_list_skills_is_compact_unless_one_is_asked(runner):
     rows = runner.list()
     assert "steps" not in rows[0] and rows[0]["name"] == "up"
@@ -569,23 +550,21 @@ def test_lift_detours_towards_the_base_when_out_of_reach():
     assert (ex.pose[0] ** 2 + ex.pose[1] ** 2) ** 0.5 <= 600
 
 
-def test_autonomous_runner_runs_candidates_and_promotes(prims, tmp_path):
+def test_autonomous_runner_runs_candidates_without_promoting(prims, tmp_path):
     from agent.explore.pick_place_skills import ensure_pick_place_skills
     lib = SkillLibrary(tmp_path / "s.json")
     ensure_pick_place_skills(lib)
     r = SkillRunner(lib, constants={"table_z": 42.0}, require_validation=False)
-    r.auto_promote_after = 2
     ex = ActionExecutor(build_registry(prims, runner=r), mode="live")
     r.executor = ex
-    lib.add_evidence("place_block_on_table", True, False)
-    lib.add_evidence("place_block_on_table", True, False)
-    assert lib.auto_promote("place_block_on_table", 2) is None
-    assert lib.get("place_block_on_table").validation_status == "candidate"
-    lib.add_evidence("pick_block_wrist", True, False)
-    lib.add_evidence("pick_block_wrist", False, False)
-    assert lib.auto_promote("pick_block_wrist", 2) is None          # a failure among the last runs
     saved = r.save("my_pick", "draft", [{"tool": "open_gripper"}])
     assert "you may run it now" in saved["note"]
+    for _ in range(2):
+        out = r.run("my_pick")
+        assert out["ok"]
+        assert lib.get("my_pick").validation_status == "candidate"
+    assert len(lib.get("my_pick").evidence) == 2
+    assert not lib.promote("my_pick")["promoted"]        # operational claims cannot confer trust
     assert lib.retire("my_pick", "never worked")["retired"] == "my_pick"
     assert lib.get("my_pick").validation_status == "deprecated"
     with pytest.raises(ValueError, match="built-in"):

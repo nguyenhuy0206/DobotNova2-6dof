@@ -39,7 +39,8 @@ def _robot_specs(p: PrimitiveSkills) -> list[ActionSpec]:
     c, m = p.cfg, p.cfg.motion
     top = p.speed_cap or c.speed.max
     speed = {"type": "integer", "minimum": c.speed.min, "maximum": top,
-             "description": f"Speed % (default {min(m.default_speed, top)}, max {top})"}
+             "description": (f"Ignored: every motion runs at fixed {p.fixed_speed} %" if p.fixed_speed else
+                             f"Speed % (default {min(m.default_speed, top)}, max {top})")}
     num = {"type": "number"}
     force = {"type": "integer", "minimum": 20, "maximum": 100, "description": "Grip force %"}
     gspeed = ({"type": "integer", "enum": [p.grip_speed], "description": f"fixed at {p.grip_speed} %"}
@@ -107,7 +108,7 @@ def _robot_specs(p: PrimitiveSkills) -> list[ActionSpec]:
                    _obj({"position": {"type": "integer", "minimum": 0, "maximum": 1000},
                          "force": force, "speed": gspeed}, ["position"]),
                    moves_robot=True),
-        ActionSpec("stop", "Emergency stop: halt motion immediately and clear the queue.",
+        ActionSpec("stop", "Pause motion immediately (Pause()); the operator resumes the robot.",
                    p.stop, _obj({}, [])),
     ]
 
@@ -146,7 +147,7 @@ def perception_specs(scene) -> list[ActionSpec]:
     ] if hasattr(scene, "depth_at") else []) + [
         ActionSpec("find_objects",
                    "Detect objects of one colour (largest first). Env camera: base_xyz_mm = robot base frame position "
-                   "of the point at the blob centre, on the surface the camera sees there (when calibrated; see look). If nothing is visible it returns last_seen (where it was, "
+                   "of the point at the blob centre, on the surface the camera sees there (when calibrated). If nothing is visible it returns last_seen (where it was, "
                    "seconds ago).",
                    scene.find_report,
                    _obj({"color": colors, "camera": camera}, ["color"]), read_only=True),
@@ -165,7 +166,8 @@ def skill_specs(runner) -> list[ActionSpec]:
                    "Run a skill by name with params. It runs locally without asking you after every step: "
                    "primitive tools (validated, safety-checked), local checks and routines. Stops at the first "
                    "failing step, runs the skill's recovery (open/lift only) and returns a failure code, trace "
-                   "and detail. Candidate skills run only with operator approval.",
+                   "and detail. " + ("Candidate skills run only with operator approval." if runner.require_validation else
+                                    "Candidate skills may run immediately; validation requires operator ledger review."),
                    runner.run, _obj({"name": {"type": "string"}, "params": {"type": "object"}}, ["name"]),
                    moves_robot=True, delegates=True),
         ActionSpec("save_skill",

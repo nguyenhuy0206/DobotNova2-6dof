@@ -19,7 +19,7 @@ qwen:
   model: data/models/qwen3.5-4b-4bit-frozen     # the frozen base (scripts/train_student.py freeze)
   adapter: ""                                   # a fine-tuned run: data/student/runs/<id>
   max_output_tokens: 2000                       # 400 cut a tool call in half on 19 Nov (the episode ended)
-  images: false                                 # positions come from look's detections
+  images: false                                 # text-only student; look has no detections (20 Nov)
   # no token budget and no call limit for qwen (local, free): it runs until it reports or Ctrl+C
 
 execution_mode: live      # live | confirm (ask y/N on every motion) | dry_run
@@ -30,7 +30,7 @@ harness:                  # token-efficient harness (agent/harness.py) — same 
   variant: V3             # V0 baseline · V1 bounded context · V2 action chunks · V3 both
   recent_turns: 4         # last model turns kept verbatim
   summary_max_chars: 4000 # rolling episode digest (≈1000 tokens, deterministic, no LLM)
-  max_horizon: 4          # most robot actions per proposal in free space (1 in contact, ≤2 aligning) — unused with free_chunks
+  max_horizon: 4          # strict policy only (free_chunks: false): 1…4 robot actions, fewer near the table
   free_chunks: true       # 20 Nov: Astra plans freely (no horizon, no verification boundary); each action still
                           # validated, the rest of a turn's calls dropped after any error / refusal / event
   env_image_detail: high  # 20 Nov: Astra finds the objects in the env image itself
@@ -41,11 +41,10 @@ harness:                  # token-efficient harness (agent/harness.py) — same 
 
 skills:
   # Autonomous: Astra runs, revises, rolls back and retires its own skills without asking (no y/N).
-  # The hard limits (speed, table floor, approach zone, contact stop, view guard) still apply to every move.
+  # The hard limits (speed, table floor, approach zone, contact stop) still apply to every move.
+  # 20 Nov: promotion only by the operator citing judge ledger passes from two distinct episodes.
   # true = the old supervised mode: every candidate run needs the operator's y.
   require_validation: false
-  auto_promote_after: 2         # IGNORED since 20 Nov: promotion only by the operator citing judge ledger entries
-  min_supervised_successes: 2   # --promote NAME (operator) needs this many supervised successes
   builtin_pick_place: false     # 20 Nov: off — the built-in skills rest on the colour detector (operator: no baseline)
 diagnosis:
   gate_after_repeats: 2         # refuse run_skill/save_skill only when the SAME failure repeats 2× undiagnosed (0 = never)
@@ -58,7 +57,7 @@ gripper:
   open_position: 1000     # fully open: at 80 % the fingertips pressed on the cube (16 Nov)
   speed: 20               # fixed finger speed % for open/close (speed 10 timed out 3 of 3, 17 Nov)
 
-view_guard:               # env camera (D455 colour) must always see the robot
+view_guard:               # optional env-camera visibility check; disabled below
   enabled: false          # 20 Nov: off (operator: only collisions matter; a move out of the D455 view was undone)
   marker_color: red       # coloured tape wrapped around the gripper body (not a task colour!)
   min_area_px: 40

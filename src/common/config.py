@@ -78,17 +78,13 @@ class MotionConfig:
     start_grace_s: float = 0.5          # time for the controller to start a queued move
     poll_s: float = 0.05
     # Approach zone (needs a taught table): fingertip below table + approach_height_mm.
-    # Inside it every Cartesian move is short and slow, and a stalled move = contact:
-    # the robot stops, backs off and the call fails with "contact at z=…".
+    # Inside it Cartesian moves use the configured step/speed limits; a stalled move = contact.
+    # 20 Nov: contact only sends Pause(), then the call fails with "CONTACT at fingertip Z=…".
     approach_height_mm: float = 120.0
     approach_max_step_mm: float = 25.0
     approach_speed: int = 3
     stall_s: float = 0.3           # no progress for this long while moving -> contact
     stall_mm: float = 0.3
-    contact_backoff_mm: float = 15.0
-    # a controller collision alarm during an approach-zone move is a contact too: clear it,
-    # check the robot is enabled again, back off and fail with "CONTACT …" (false = stop as before)
-    collision_recovery: bool = True
     # gripper vs the robot's own elbow / upper arm / forearm (actions/self_collision.py): moves whose
     # path comes closer than this (gripper axis to link axis) are refused before moving; 0 = off
     self_clearance_mm: float = 65.0
@@ -97,7 +93,6 @@ class MotionConfig:
     # elbow / wrist joint centres vs the table (same module): reaching low close to the base folds the
     # elbow down onto the table (19 Nov); 0 = off
     elbow_table_clearance_mm: float = 60.0
-    recovery_timeout_s: float = 12.0
     home_joints: list[float] = field(default_factory=lambda: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0])
 
 

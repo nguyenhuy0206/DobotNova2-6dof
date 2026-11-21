@@ -167,17 +167,9 @@ close left<->right. A block ready to grasp sits BETWEEN the two fingertips, edge
 2. Knowledge: for each cause you found, the concept it is about (list_concepts / define_concept) and a
    hypothesis with a prediction (propose_hypothesis when -> expect); query_observations shows the numbers.
 3. Rebuild the skill set so it is CONCRETE and unambiguous — exact numbers, explicit wrist looks,
-   no "adapt as needed". Suggested split (each one run_skill call, so few API calls per attempt):
-   - hover_over_block(x, y, rz, z_top): open_gripper, move to z_top + 95 (top of approach zone), look wrist.
-   - descend_to_check(x, y, rz, z_top): ≤ 25 mm steps down to z_top + 30, then look wrist.
-     (Centring/turning between here and the grasp is done by you with tool-frame move_relative
-     dx/dy/drz, ≤ 15 mm / ≤ 45°, checking the wrist image.)
-   - grasp_and_lift(z_top, depth): from z_top + 30 straight down in two equal steps to z_top - depth,
-     close_gripper, lift 15 mm, look wrist (the result shows holding + grip position).
-   - place_on_table(x, y, rz): move above (x, y) at z 165, descend in ≤ 25 mm steps to z 55,
-     open_gripper, lift to 165.
-   Step args may use "{param}" and "=expressions" (+ - * /). Tool limits: below z 162 every
-   Cartesian move ≤ 25 mm; fingertip ≥ 52; grip closes to 500 at most.
+   no "adapt as needed". Step args may use "{param}" and "=expressions" (+ - * /).
+   20 Nov: arm motions run at fixed 50 %; contact sends Pause() and ends the episode.
+   Table and path limits come from get_state and config/robot.yaml; grip closes to 500 at most.
 4. delete_skill every old skill that is vague, partial or superseded by the new set.
 Finish with: the cause counts, the new skill list, and the one thing to try first next time.
 """

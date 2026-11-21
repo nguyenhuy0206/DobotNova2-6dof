@@ -237,10 +237,3 @@ class Nova2:
         return self.motion(f"MovL({format_values(pose, '.4f')},User={user},Tool={tool},"
                            f"SpeedL={speed},AccL={speed})")
 
-    def rel_movl_user(self, delta: list[float], speed: int, user: int = 0) -> str:
-        """Straight-line motion by an offset in a user frame (user 0 = robot base)."""
-        return self.motion(f"RelMovLUser({format_values(delta, '.4f')},{user},SpeedL={speed},AccL={speed})")
-
-    def rel_movl_tool(self, delta: list[float], speed: int, tool: int = 0) -> str:
-        """Straight-line motion by an offset expressed in the tool frame."""
-        return self.motion(f"RelMovLTool({format_values(delta, '.4f')},{tool},SpeedL={speed},AccL={speed})")

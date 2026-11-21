@@ -29,6 +29,7 @@ import re
 import statistics
 from pathlib import Path
 
+from actions.skill_runner import SKILL_TOOLS
 from common.errors import ValidationError
 from common.paths import REPO_ROOT
 
@@ -44,9 +45,6 @@ SAFE_BUILTINS = {n: __builtins__[n] if isinstance(__builtins__, dict) else getat
     "abs", "all", "any", "bool", "dict", "enumerate", "filter", "float", "int", "isinstance", "len", "list", "map",
     "max", "min", "range", "reversed", "round", "set", "sorted", "str", "sum", "tuple", "zip",
     "Exception", "ValueError", "RuntimeError", "KeyError", "IndexError", "ZeroDivisionError")}
-SKILL_TOOLS = {"get_state", "move_to_pose", "move_to_joints", "move_relative", "jog_joint", "go_to_position",
-               "open_gripper", "close_gripper", "set_gripper", "stop", "look", "find_objects", "check_robot_in_view",
-               "depth_at"}
 
 
 def validate_source(code: str) -> ast.Module:

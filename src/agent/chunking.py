@@ -1,7 +1,8 @@
-"""Adaptive action chunking: Astra may propose several tool calls in one turn; the
-harness decides how many of them are safe to run before Astra looks again.
+"""Action chunking: Astra may propose several tool calls in one turn.
 
-Horizon L (number of robot-moving actions run from one proposal):
+20 Nov: free_chunks skips zone horizons and verification boundaries, subject to the
+per-turn call/action limits. Errors and unexpected events still abort the turn.
+Strict policy (free_chunks off), horizon L (robot-moving actions per proposal):
   * contact-rich (gripper, descending inside the approach zone)   L = 1
   * uncertain alignment (sideways / turning inside the zone)      L ≤ 2
   * verified free-space motion (above the approach zone)          L ≤ max_horizon (4)
@@ -25,7 +26,7 @@ MOTION = {"move_to_pose", "move_to_joints", "move_relative", "jog_joint", "go_to
 @dataclass
 class ChunkPolicy:
     enabled: bool = True
-    max_horizon: int = 4          # 1 … 4 (free: any)
+    max_horizon: int = 4          # strict: 1 … 4; free: harness uses its larger action limit
     max_calls: int = 8            # read-only calls included
     # free (20 Nov, operator): Astra plans as many actions as it wants; no horizon by zone, no verification
     # boundary. Every action is still validated (target, path, joint/self collision, table) when it runs,

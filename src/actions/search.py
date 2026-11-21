@@ -31,7 +31,7 @@ class ObjectSearch:
                         "note": "seen by the wrist camera only (pixels, no 3D)"}
         return None
 
-    MAX_JOG_DEG = 20.0   # jog_joint's per-command limit (config joint_step.max_deg)
+    MAX_JOG_DEG = 20.0   # search's jog chunk; jog_joint also enforces config joint_step.max_deg
 
     def _jog(self, degrees: float) -> None:
         """Rotate the joint, split into steps the jog limit allows."""

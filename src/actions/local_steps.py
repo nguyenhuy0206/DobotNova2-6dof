@@ -64,8 +64,8 @@ class LocalSteps:
 
     @staticmethod
     def _anchor(obj: dict) -> tuple[float, float]:
-        x, y, w, h = obj["bbox"]
-        return x + w / 2, y + h                           # bottom-centre: not clipped at the image top
+        from actions.astra_code import RoutineContext
+        return RoutineContext.anchor(obj)
 
     # ------------------------------------------------------------------ checks
     def check(self, name: str, memo: dict, **args) -> dict:
@@ -217,7 +217,7 @@ class LocalSteps:
 
     # tool-frame offsets (mm) tried when the cube is not in the wrist view. The camera looks
     # past the fingers, so a cube that is missed usually lies beyond the top of the image:
-    # -dx (moves the image content down) is tried first. Each hop ≤ 25 mm (approach zone).
+    # -dx (moves the image content down) is tried first; every hop goes through the motion checks.
     SEARCH = [(-15, 0), (-30, 0), (-15, 15), (-15, -15), (0, 15), (0, -15), (-30, 15), (-30, -15), (15, 0)]
 
     def routine_wrist_search(self, memo, color: str, min_area: float = 1500, speed: int | None = 1,

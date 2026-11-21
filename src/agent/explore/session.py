@@ -1,7 +1,7 @@
 """Explore mode: Astra learns the cell by itself from primitive tools.
 
     session = build_explore()          # config/explore.yaml + agent.yaml + robot.yaml
-    problems = session.preflight()     # robot ready, table taught, env calibrated, cameras, marker visible
+    problems = session.preflight()     # robot ready, table taught, env calibrated, cameras; marker if guard enabled
     session.harness.run(session.cfg.task)
 
 What is different from the plain agent (agent/toolkit.py):
@@ -9,9 +9,9 @@ What is different from the plain agent (agent/toolkit.py):
     no search_object): every composite skill is one Astra wrote itself,
     kept in its own file (skills_explore.json)
   * hard limits enforced in code, whatever the model asks:
-      speed ≤ agent.yaml max_speed · fingertip/flange above the taught table along the
-      whole path · the env camera must still see the robot after every move (else the
-      move is undone) · gripper never closes beyond gripper.close_position
+      agent.yaml fixed_speed (50 %), or max_speed cap when unset · fingertip/flange above
+      the taught table along the whole path · contact only sends Pause() (20 Nov) · gripper
+      never closes beyond gripper.close_position; optional view guard is disabled in explore.yaml
   * the cameras, table and limits are calibrated by the operator (scripts/calibrate.sh); the
     calibration stays in use until the operator calibrates again
   * knowledge (memory/knowledge.py): the harness records every robot action as an observation;
@@ -185,9 +185,7 @@ def compact_state(p, executor=None, runner=None) -> dict:
            "gripper": {k: g.get(k) for k in ("position", "grip_status") if k in g} or None}
     if executor is not None:
         out["approval"] = {"execution_mode": executor.mode,
-                           "candidate_skills_need_operator": bool(runner and runner.require_validation),
-                           **({"auto_promote_after": runner.auto_promote_after}
-                              if runner and not runner.require_validation and runner.auto_promote_after else {})}
+                           "candidate_skills_need_operator": bool(runner and runner.require_validation)}
     return out
 
 def build_explore(confirm=None, mode: str | None = None,
@@ -251,7 +249,6 @@ def build_explore(confirm=None, mode: str | None = None,
     if block_top is not None:
         runner.constants["block_top_z"] = block_top
     runner.require_validation = cfg.skills.require_validation
-    runner.auto_promote_after = 0
     runner.supervisor = (lambda name, params: confirm(f"CANDIDATE skill {name} (supervised run)", params)) \
         if confirm is not None and cfg.skills.require_validation else None
     if cfg.skills.builtin_pick_place:

@@ -16,7 +16,7 @@ from pathlib import Path
 import _bootstrap  # noqa: F401
 
 TOOLS = [
-    {"type": "function", "function": {"name": "look", "description": "Take a picture with a camera and detect coloured objects.",
+    {"type": "function", "function": {"name": "look", "description": "Take a picture with a camera; no objects are detected.",
      "parameters": {"type": "object", "properties": {"camera": {"type": "string", "enum": ["env", "wrist"]},
                                                      "colors": {"type": "array", "items": {"type": "string"}}},
                     "required": ["camera"]}}},
@@ -138,7 +138,7 @@ def explore_tools() -> list[dict]:
     from agent.explore import explore_specs, load_explore_config
     from agent.tools import to_openai_tools
     from agent.toolkit import build_toolkit
-    from common.config import AgentConfig, PerceptionConfig, RobotConfig
+    from common.config import AgentConfig, RobotConfig
     from memory.knowledge import KnowledgeStore
     from memory.notes import NotesStore
     from memory.skills import SkillLibrary

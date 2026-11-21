@@ -60,7 +60,7 @@ def fill(value, params: dict):
 # change what is safe, what is remembered, or other skills)
 SKILL_TOOLS = {"get_state", "move_to_pose", "move_to_joints", "move_relative", "jog_joint", "go_to_position",
                "open_gripper", "close_gripper", "set_gripper", "stop", "look", "find_objects",
-               "check_robot_in_view", "depth_at"}     # depth_at: 20 Nov — the only perception look still offers
+               "check_robot_in_view", "depth_at"}     # 20 Nov: pictures via look; depth/base coordinates via depth_at
 
 
 class SkillRunner:
@@ -86,7 +86,6 @@ class SkillRunner:
         self.require_validation = require_validation
         self.supervisor = supervisor
         self.episode: str | None = None    # set by the harness, stored with evidence
-        self.auto_promote_after = 0        # compatibility only; automatic promotion is disabled
         self.current_dependency_hash = None
         self.quarantine_after = 0          # refuse a version that failed this many runs in a row (0 = off)
 

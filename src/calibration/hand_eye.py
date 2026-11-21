@@ -106,7 +106,7 @@ def depth_check_mm(det: Detection, spec: BoardSpec, T_cam_board: np.ndarray, dep
             diffs.append(depth_m[vi, ui] - p[2])
     return round(float(np.median(diffs)) * 1000, 1) if diffs else None
 
-def solve_with_marker_offset(camera_pts_m, tcp_poses, initial_offset_mm=None,
+def solve_with_marker_offset(camera_pts_m, tcp_poses,
                              iterations: int = 20) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]:
     """Calibrate when the marker's exact place on the gripper is unknown.
 
@@ -117,7 +117,6 @@ def solve_with_marker_offset(camera_pts_m, tcp_poses, initial_offset_mm=None,
     squares with R relaxed to any 3x3 matrix, R snapped to the nearest rotation,
     then (t, o) re-solved and refined. Needs >= 5 points with varied tool
     rotations, otherwise ``o`` and ``t`` cannot be told apart.
-    ``initial_offset_mm`` is accepted for API compatibility and ignored.
 
     Returns (T, offset_mm, rms_mm, per_point_error_mm).
     """

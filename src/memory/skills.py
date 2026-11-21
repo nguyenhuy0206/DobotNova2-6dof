@@ -41,7 +41,7 @@ class Skill:
     failure_conditions: dict = field(default_factory=dict)        # failure code -> what it means / next try
     recovery: list[dict] = field(default_factory=list)            # safe steps after a definite failure
     calibration: str = ""   # coordinate definition the numbers use (memory.knowledge.CALIBRATION); "" = current
-    validation_status: str = "candidate"   # candidate (needs a supervised run) | validated | deprecated
+    validation_status: str = "candidate"   # candidate (needs operator ledger review) | validated | deprecated
     validated_dependency_hash: str | None = None
     ledger_evaluation_ids: list[str] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)            # {t, ok, supervised, failure, episode}
@@ -107,7 +107,7 @@ class SkillLibrary:
                                              "validated_dependency_hash": old.validated_dependency_hash}])[-keep:]
             skill.successes = skill.failures = 0
             skill.evidence = []
-        # A new or revised procedure is never trusted until it is run under supervision.
+        # A new or revised procedure needs operator promotion citing the judge ledger.
         skill.validation_status = "candidate"
         skill.validated_dependency_hash = None
         skill.ledger_evaluation_ids = []
@@ -161,8 +161,8 @@ class SkillLibrary:
                 "failed_at": dict(sorted(by_step.items(), key=lambda kv: -kv[1])),
                 "measured": {k: v[-8:] for k, v in nums.items()}}
 
-    def promote(self, name: str, min_supervised_successes: int = 2, *, evaluation_ids=None, ledger=None) -> dict:
-        """Operator-only promotion citing independent finalized ledger evaluations."""
+    def promote(self, name: str, min_judge_episodes: int = 2, *, evaluation_ids=None, ledger=None) -> dict:
+        """Operator-only promotion citing independent finalized ledger evaluations (two episodes by default)."""
         from judge.ledger import JudgeLedger
         skill = self.get(name)
         if skill is None:
@@ -173,7 +173,7 @@ class SkillLibrary:
                 and r["event"] == "episode_end" and r["success_credit"] and not r["provisional"]
                 and r["skill_dependency_hash"] == current]
         episodes = {r["episode_id"] for r in rows}
-        if len(episodes) < max(1, min_supervised_successes):
+        if len(episodes) < max(1, min_judge_episodes):
             return {"promoted": False, "reason": "insufficient matching judge ledger citations"}
         skill.validation_status = "validated"
         skill.validated_dependency_hash = current
@@ -182,10 +182,6 @@ class SkillLibrary:
         self.save(skill)
         return {"promoted": True, "name": name, "version": skill.version,
                 "ledger_evaluation_ids": skill.ledger_evaluation_ids}
-
-    def auto_promote(self, name: str, after: int) -> None:
-        """Disabled: writable skill checks cannot confer authority."""
-        return None
 
     def retire(self, name: str, reason: str = "") -> dict:
         """Mark a skill deprecated (kept in the file with its history; run_skill refuses it)."""

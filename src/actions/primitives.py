@@ -157,9 +157,6 @@ class PrimitiveSkills:
         p = np.array(pose[:3]) - self._tool_axis(pose) * self.tool_length_mm
         return [*map(float, p), *pose[3:]]
 
-    def tip_from_controller(self, pose: list[float]) -> list[float]:
-        return self.tip_from_flange(self.flange_from_controller(pose))
-
     def _lowest_tip(self, centre, R: np.ndarray) -> list[float]:
         """The lowest point of the fingertips: the centre, or an open fingertip when the gripper tilts."""
         c = np.asarray(centre[:3], float)
@@ -312,7 +309,7 @@ class PrimitiveSkills:
                 f"move there, this one is {inside:.0f} mm.")
         return min(speed, self.m.approach_speed), True
 
-    # -- env camera must keep seeing the robot ------------------------------------
+    # -- optional env-camera view guard (disabled in explore.yaml, 20 Nov) --------
     def _after_motion(self, result: dict, undo: Callable[[], None]) -> dict:
         if self.view_guard is None:
             return result
@@ -351,7 +348,7 @@ class PrimitiveSkills:
     def _wait(self, reached: Callable[[Feedback], bool] | None, label: str, contact: bool = False) -> dict:
         """Block until the move finishes. Stops the robot on alarm or timeout.
         contact=True: a move that stops making progress is blocked by something —
-        stop, back off upward and raise ContactError."""
+        Pause() and raise ContactError (20 Nov: no automatic back-off)."""
         start = time.monotonic()
         last_p, last_t, moved = None, start, False
         prog_p, prog_t = None, start           # progress watch for the timeout (any move, not only contact)

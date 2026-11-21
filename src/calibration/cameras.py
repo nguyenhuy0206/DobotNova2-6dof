@@ -524,11 +524,3 @@ def last_session(result_file: Path = CALIBRATION_FILE) -> Path | None:
     if path is not None and not path.is_absolute():
         path = SESSIONS_DIR.parent.parent / path
     return path if path is not None and (path / "views.json").exists() else None
-
-
-def last_start_tip(result_file: Path = CALIBRATION_FILE) -> list[float] | None:
-    """Fingertip pose the last saved calibration started from (the wrist camera saw the board there)."""
-    try:
-        return json.loads(result_file.read_text(encoding="utf-8")).get("start_tip")
-    except (OSError, ValueError):
-        return None

@@ -129,9 +129,6 @@ class RobotActions:
     def gripper_open(self) -> dict:
         return self.gripper_move(self.config.gripper.open_position)
 
-    def gripper_close(self) -> dict:
-        return self.gripper_move(self.config.gripper.closed_position)
-
     def gripper_disconnect(self) -> str:
         with self.lock:
             return self.gripper.disconnect()
