@@ -21,7 +21,6 @@ class ViewGuardConfig:
 @dataclass
 class SkillPolicy:
     require_validation: bool = True       # candidate skills run live only with operator approval
-    builtin_pick_place: bool = True       # add pick_block_wrist / place_block_on_table if missing
 
 @dataclass
 class DiagnosisPolicy:

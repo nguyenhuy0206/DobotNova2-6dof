@@ -35,7 +35,6 @@ allowed_tools:
   # perception (perception/scene.py)
   - look
   - find_objects
-  - search_object
   # composite skills (actions/skill_runner.py, data/memory/skills.json)
   - list_skills
   - run_skill

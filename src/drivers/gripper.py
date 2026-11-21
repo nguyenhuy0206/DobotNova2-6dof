@@ -374,7 +374,7 @@ class PGCGripperRemote:
             raise RobotError(f"gripper (via ui/app.py): {why or exc}") from None
         except (urllib.error.URLError, OSError) as exc:
             raise RobotError(f"gripper: cannot reach ui/app.py at {self.base_url} ({exc}). It owns the gripper's "
-                             "serial port — start it (scripts/run_ui.sh).") from None
+                             "serial port — start it (scripts/run_vision.sh).") from None
 
     def connect(self, slave_id: int = 1, baud: int = 115200, parity: str = "N") -> dict:
         status = self._call("status")              # the app opens + initializes its driver on first use

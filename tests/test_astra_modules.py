@@ -191,35 +191,6 @@ def test_harness_attaches_look_image_and_saves_it(kit, tmp_path):
     assert second[1]["role"] == "user" and second[1]["content"][1]["type"] == "input_image"
 
 
-def test_calibration_solves_unknown_marker_offset_and_flags_outlier():
-    from calibration.geometry import outliers
-    from calibration.hand_eye import solve_with_marker_offset
-    from common.poses import pose_to_matrix
-    rng = np.random.default_rng(1)
-    true_offset = np.array([37.0, 67.0, 9.0])
-    poses, cams = [], []
-    inv = np.linalg.inv(CAM_TO_BASE)
-    for _ in range(12):
-        # Varied tool rotations make the marker offset separable from the camera pose.
-        pose = [*rng.uniform([-600, -450, 0], [-430, 0, 300]), 180 + rng.uniform(-25, 25),
-                rng.uniform(-25, 25), rng.uniform(0, 150)]
-        P = pose_to_matrix(pose)
-        marker_m = P[:3, 3] + P[:3, :3] @ true_offset / 1000
-        cams.append((inv @ np.append(marker_m, 1))[:3] + rng.normal(0, 0.001, 3))
-        poses.append(pose)
-    cams[5] = cams[5] + 0.03                              # one bad point (30 mm)
-    T, offset, rms, errors = solve_with_marker_offset(cams, poses)
-    assert outliers(errors) == [5]
-    keep = [i for i in range(12) if i != 5]
-    T, offset, rms, _ = solve_with_marker_offset([cams[i] for i in keep], [poses[i] for i in keep])
-    assert rms < 3 and np.allclose(offset, true_offset, atol=5)
-    # What matters is accuracy where objects are (not at the camera itself):
-    work = np.array([[x, y, z] for x in (-0.6, -0.5) for y in (-0.4, -0.1) for z in (0.0, 0.2)])
-    work_cam = work @ inv[:3, :3].T + inv[:3, 3]
-    err_mm = np.linalg.norm(work_cam @ T[:3, :3].T + T[:3, 3] - work, axis=1) * 1000
-    assert err_mm.max() < 4
-
-
 def test_astra_client_reads_key_from_env_file(tmp_path, monkeypatch):
     from agent.astra_client import AstraClient
     from common.config import load_dotenv
@@ -276,32 +247,6 @@ def test_find_reports_last_seen_when_hidden(prims, sim):
     scene.sources["env"] = StaticSource(scene_with([]).sources["env"].frame)        # arm now hides it
     hidden = scene.find_report("red")
     assert hidden["objects"] == [] and hidden["last_seen"]["base_xyz_mm"] == pytest.approx([400, 0, 50], abs=1)
-
-
-def test_search_object_rotates_j1_until_seen(prims, sim, tmp_path):
-    visible = scene_with([((0, 0, 220), (320, 240), 20, 0.95)]).sources["env"].frame
-    hidden = scene_with([]).sources["env"].frame
-    scene = scene_with([])
-    scene.sources = {"env": ArmDependentSource(sim, visible, hidden, sim.state["joints_deg"][0])}
-    ex, _ = build_toolkit("live", robot_cfg=prims.cfg, agent_cfg=AgentConfig(allowed_tools=[]),
-                          perception_cfg=scene.cfg, primitives=prims, scene=scene,
-                          library=SkillLibrary(tmp_path / "s.json"))
-    r = ex.execute("search_object", {"color": "red", "max_sweep_deg": 20, "step_deg": 10})
-    assert r["ok"] and r["result"]["found"] and r["result"]["rotated_deg"] == 10
-    assert r["result"]["object"]["base_xyz_mm"] == pytest.approx([400, 0, 50], abs=1)
-    assert "SpeedJ=10" in sim.motion_log[-1]                 # agent speed cap applies
-
-
-def test_search_object_returns_to_start_when_not_found(prims, sim, tmp_path):
-    scene = scene_with([])
-    start = list(sim.state["joints_deg"])
-    ex, _ = build_toolkit("live", robot_cfg=prims.cfg, agent_cfg=AgentConfig(allowed_tools=[]),
-                          perception_cfg=scene.cfg, primitives=prims, scene=scene,
-                          library=SkillLibrary(tmp_path / "s.json"))
-    r = ex.execute("search_object", {"color": "red", "max_sweep_deg": 20, "step_deg": 10})
-    assert r["ok"] and not r["result"]["found"] and r["result"]["returned_to_start"]
-    assert sim.state["joints_deg"] == pytest.approx(start)
-    assert len(sim.motion_log) == 6                          # +10 +10 (-20 -10) -10 +20
 
 
 def test_touch_calibration_solver():

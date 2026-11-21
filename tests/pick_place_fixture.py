@@ -1,24 +1,6 @@
-"""Pick / place skills distilled from the successful episode 20261112-181222-0f8c62.
+"""Test fixture (was src/agent/explore/pick_place_skills.py, removed 21 Nov): the pick/place skills the
+scripted mock world runs. Not part of the robot software any more."""
 
-v5 (16 Nov): no touch probe. Six probes on 16 Nov all landed on the box top (≈ 60 mm,
-cube top ≈ 81) and knocked two cubes off the box; the grasp ladder measures by closing
-instead, and an attempt starts from where the arm already is.
-
-What worked there (green cube, trial 3):
-  hover at z_top + 95 (top of the approach zone), rz chosen so the cube edges are
-  square to the fingers (that day: tool offset −30° -> absolute rz 70.9) · descend to
-  z_top + 30 · centre with tool-frame dx/dy from the wrist image until the cube's
-  bottom edge is at ≈ (355, 140) px · straight down to z_top − 8 · close (grip 776,
-  holding) · lift · env camera shows the cube moved off its place · transfer at
-  z ≈ table + 123 · descend to table + 13 · open · lift 25 · wrist empty, env sees it
-  on the table.
-
-Nothing episode-specific is hard-coded: the block position, top height, rz and the
-place spot are parameters Astra fills from its observations; the measured numbers
-(depth 8, target pixel, px/mm mapping) are parameter DEFAULTS it may tune in a new
-version. They start as candidates: each run is supervised by the operator until
-promoted (scripts/run_explore.sh --promote NAME).
-"""
 from __future__ import annotations
 
 from memory.skills import Skill, SkillLibrary

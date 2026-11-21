@@ -151,7 +151,7 @@ def serve(source: FrameSource, host: str = "127.0.0.1", port: int = 8766) -> Thr
 
 
 def stop_when_process_exits(pid: int, server: ThreadingHTTPServer, poll_s: float = 1.0) -> threading.Thread:
-    """Shut the helper down once ``pid`` (the UI started with run_ui.sh --depth) is gone."""
+    """Shut the helper down once ``pid`` (the UI started with run_vision.sh) is gone."""
     import os
 
     def watch():
@@ -183,7 +183,7 @@ def main() -> None:
     # ("Frame didn't arrive") until the D455 was replugged. Try high_accuracy again on USB 3.
     p.add_argument("--preset", default=os.environ.get("D455_PRESET", ""),
                    help="D4xx visual preset on the depth sensor, e.g. high_accuracy ('' = leave the camera's setting)")
-    p.add_argument("--watch-pid", type=int, help="exit when this process exits (used by run_ui.sh --depth)")
+    p.add_argument("--watch-pid", type=int, help="exit when this process exits (used by run_vision.sh)")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 

@@ -3,7 +3,6 @@
     hand_eye                 camera on the flange, a board fixed in the cell: T_flange_cam and
                              T_base_board from many (flange pose, board corners) views
     env_from_board           a fixed camera that sees the same board: T_base_env through the board
-    solve_with_marker_offset a fixed camera that sees a marker on the gripper (legacy method)
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ import cv2
 import numpy as np
 
 from calibration.board import BoardSpec, Detection, board_pose, camera_matrix, object_points
-from calibration.geometry import inv, nearest_rotation, solve_rigid_transform, to_rvec_t, transform
+from calibration.geometry import inv, nearest_rotation, to_rvec_t, transform
 
 @dataclass
 class HandEyeResult:
@@ -105,59 +104,3 @@ def depth_check_mm(det: Detection, spec: BoardSpec, T_cam_board: np.ndarray, dep
         if 0 <= vi < depth_m.shape[0] and 0 <= ui < depth_m.shape[1] and depth_m[vi, ui] > 0:
             diffs.append(depth_m[vi, ui] - p[2])
     return round(float(np.median(diffs)) * 1000, 1) if diffs else None
-
-def solve_with_marker_offset(camera_pts_m, tcp_poses,
-                             iterations: int = 20) -> tuple[np.ndarray, np.ndarray, float, np.ndarray]:
-    """Calibrate when the marker's exact place on the gripper is unknown.
-
-    Model, for every recorded point i (metres):
-        R @ c_i + t  =  p_i + R_i @ o
-    c_i = marker seen by the camera, (R_i, p_i) = robot TCP pose, o = marker in
-    the tool frame, (R, t) = camera -> base. Solved directly: one linear least
-    squares with R relaxed to any 3x3 matrix, R snapped to the nearest rotation,
-    then (t, o) re-solved and refined. Needs >= 5 points with varied tool
-    rotations, otherwise ``o`` and ``t`` cannot be told apart.
-
-    Returns (T, offset_mm, rms_mm, per_point_error_mm).
-    """
-    from common.poses import pose_to_matrix
-
-    cam = np.asarray(camera_pts_m, float)
-    if len(cam) < 5:
-        raise ValueError("need >= 5 points")
-    poses = [pose_to_matrix(p) for p in tcp_poses]
-    Rs = [P[:3, :3] for P in poses]
-    ps = np.array([P[:3, 3] for P in poses])
-    I3 = np.eye(3)
-
-    # 1) linear: unknowns vec(M) (9, column-major), t (3), o (3)
-    A = np.vstack([np.hstack([np.kron(c, I3), I3, -R]) for c, R in zip(cam, Rs)])
-    x = np.linalg.lstsq(A, ps.reshape(-1), rcond=None)[0]
-    M = x[:9].reshape(3, 3, order="F")
-    U, _, Vt = np.linalg.svd(M)
-    R = U @ np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))]) @ Vt
-
-    def solve_t_o(R):
-        B = np.vstack([np.hstack([I3, -Ri]) for Ri in Rs])
-        rhs = (ps - cam @ R.T).reshape(-1)
-        y = np.linalg.lstsq(B, rhs, rcond=None)[0]
-        return y[:3], y[3:]
-
-    t, o = solve_t_o(R)
-    # 2) refine: Kabsch for (R, t) given o, then (t, o) given R
-    for _ in range(iterations):
-        base = ps + np.array([Ri @ o for Ri in Rs])
-        T, _ = solve_rigid_transform(cam, base * 1000.0)
-        R = T[:3, :3]
-        t_new, o_new = solve_t_o(R)
-        done = np.linalg.norm(o_new - o) < 1e-7
-        t, o = t_new, o_new
-        if done:
-            break
-
-    T = np.eye(4)
-    T[:3, :3], T[:3, 3] = R, t
-    base = ps + np.array([Ri @ o for Ri in Rs])
-    errors = np.linalg.norm((cam @ R.T + t) - base, axis=1) * 1000.0
-    rms = float(np.sqrt((errors ** 2).mean()))
-    return T, o * 1000.0, rms, errors

@@ -77,4 +77,4 @@ from drivers.camera import import_pyrealsense2
 rs = import_pyrealsense2()
 print('pyrealsense2', rs.__version__, 'from', rs.__file__)"
 echo
-echo "Done. Depth on macOS needs root:  sudo scripts/run_depth.sh   (then scripts/run_ui.sh as usual)"
+echo "Done. Depth on macOS needs root:  sudo scripts/run_depth.sh   (scripts/run_vision.sh starts it for you)"

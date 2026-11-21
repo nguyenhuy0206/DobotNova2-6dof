@@ -112,8 +112,6 @@ class EvidenceCapture:
         return "full" if complete and detection.area / (w * h) >= fill else "partial"
 
     def camera(self, name: str) -> Evidence:
-        import cv2
-
         frame = self.scene.observe(name)
         # Preserve raw depth and intrinsics with the pixels; processed tool outputs are not evidence.
         buf = io.BytesIO()

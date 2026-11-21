@@ -1,5 +1,4 @@
 """Going round in circles ends the episode: same action / hypothesis 3× in a row."""
-from types import SimpleNamespace as NS
 
 from agent.repeats import RepeatGuard
 

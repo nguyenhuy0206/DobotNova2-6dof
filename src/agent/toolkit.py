@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from actions.executor import ActionExecutor, ConfirmFn
 from actions.primitives import PrimitiveSkills, create_primitives
 from actions.registry import build_registry
-from actions.search import ObjectSearch
 from actions.skill_runner import SkillRunner
 from common.config import (AgentConfig, PerceptionConfig, RobotConfig, load_agent_config,
                            load_perception_config, load_robot_config)
@@ -52,10 +51,9 @@ def build_toolkit(mode: str | None = None, confirm: ConfirmFn | None = None, *, 
     kwargs = {"mode": mode or agent_cfg.execution_mode, "allowed": agent_cfg.allowed_tools}
     if confirm is not None:
         kwargs["confirm"] = confirm
-    search = ObjectSearch(scene)
-    specs = build_registry(primitives, scene, runner, search) + list(extra_specs or [])
+    specs = build_registry(primitives, scene, runner) + list(extra_specs or [])
     executor = ActionExecutor(specs, **kwargs)
-    runner.executor = search.executor = executor
+    runner.executor = executor
     from judge.capture import EvidenceCapture
     from judge.harness import HarnessJudge
     from judge.ledger import LEDGER_FILE

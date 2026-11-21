@@ -6,7 +6,7 @@
     scene.depth_at([[u, v]]) -> {"points": [{"depth_mm": ..., "base_xyz_mm": ..., ...}], ...}
 
 Frame sources (no camera is opened here, so it never fights the UI for a device):
-  * env   -> D455 depth helper (colour + aligned depth + intrinsics)   scripts/run_ui.sh --depth
+  * env   -> D455 depth helper (colour + aligned depth + intrinsics)   scripts/run_vision.sh
   * other -> latest JPEG from the running UI (colour only)             /api/cameras/<name>/frame.jpg
 
 3D needs depth (env) and a calibration (scripts/calibrate.sh cameras);
@@ -73,7 +73,7 @@ class UIFrameSource:
                 sequence = r.headers.get("X-Frame-Sequence")
                 stream = r.headers.get("X-Frame-Stream")
         except (urllib.error.URLError, OSError) as exc:
-            raise RobotError(f"camera frame unavailable ({self.url}) — is scripts/run_ui.sh running? {exc}") from exc
+            raise RobotError(f"camera frame unavailable ({self.url}) — is scripts/run_vision.sh running? {exc}") from exc
         return Frame(color=cv2.imdecode(data, cv2.IMREAD_COLOR),
                      captured_ns=int(captured) if captured else None,
                      sequence_id=int(sequence) if sequence else None, stream_id=stream)
@@ -274,8 +274,7 @@ class Scene:
                   "stream_id": frame.stream_id, "legacy": frame.captured_ns is None}
         if not objects:
             report["last_seen"] = self.last_seen_info(color)
-            report["hint"] = ("not visible now — often hidden by the arm. Use last_seen, move the arm "
-                              "away, or call search_object.")
+            report["hint"] = "not visible now — often hidden by the arm (last_seen: where it was)."
         return report
 
     def encode_image(self, bgr: np.ndarray, objects: list[dict], upscale: bool = False) -> str:

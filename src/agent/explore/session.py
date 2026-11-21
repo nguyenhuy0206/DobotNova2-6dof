@@ -5,8 +5,8 @@
     session.harness.run(session.cfg.task)
 
 What is different from the plain agent (agent/toolkit.py):
-  * only primitives + seeing + learning tools (no seed skills,
-    no search_object): every composite skill is one Astra wrote itself,
+  * only primitives + seeing + learning tools (no seed skills): every composite skill is one
+    Astra wrote itself,
     kept in its own file (skills_explore.json)
   * hard limits enforced in code, whatever the model asks:
       agent.yaml fixed_speed (50 %), or max_speed cap when unset · fingertip/flange above
@@ -28,7 +28,6 @@ from agent.astra_client import AstraClient
 from agent.explore.config import ExploreConfig, load_explore_config
 from agent.explore.diagnosis import Investigation
 from agent.explore.diagnosis import specs as diagnosis_specs
-from agent.explore.pick_place_skills import ensure_pick_place_skills
 from agent.explore.prompt import EXPLORE_INSTRUCTIONS, for_driver
 from agent.explore.tools import code_specs, explore_specs
 from agent.harness import AgentHarness, HarnessOptions
@@ -251,8 +250,6 @@ def build_explore(confirm=None, mode: str | None = None,
     runner.require_validation = cfg.skills.require_validation
     runner.supervisor = (lambda name, params: confirm(f"CANDIDATE skill {name} (supervised run)", params)) \
         if confirm is not None and cfg.skills.require_validation else None
-    if cfg.skills.builtin_pick_place:
-        ensure_pick_place_skills(library)
     # observations: every live robot action, look and skill run, with the measured state after it
     knowledge.state_fn = lambda: _snapshot(primitives)
     knowledge.records = lambda name: executor.mode in ("live", "confirm") and _observed(executor, name)

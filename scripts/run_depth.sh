@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # RealSense D455 depth helper. macOS only lets root open the depth sensor, so this
 # small process (and nothing else) runs with sudo. Keep it open in its own terminal,
-# then run scripts/run_ui.sh as usual and pick "RealSense (colour + depth)".
+# scripts/run_vision.sh starts it (and stops it with the UI); run it by hand only to debug the helper.
 #
 #   sudo scripts/run_depth.sh            (or without sudo: it asks for your password)
 #   sudo scripts/run_depth.sh --width 640 --height 480 --fps 15

@@ -35,3 +35,10 @@ docs/
 # raw phone videos (only the compressed, captioned MP4 in result/ is published)
 *.MOV
 *.mov
+
+# docs and notes stay local (operator, 21 Nov): README, DISCUSSION, module notes
+*.md
+
+# Astra's own routines/checks and their history: written by the agent at run time (like data/memory)
+src/agent/astra_skills/*
+!src/agent/astra_skills/.gitkeep

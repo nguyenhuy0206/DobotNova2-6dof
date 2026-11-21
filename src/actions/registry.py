@@ -13,23 +13,12 @@ def _obj(properties: dict, required: list[str]) -> dict:
     return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
 
 
-def build_registry(p: PrimitiveSkills, scene=None, runner=None, search=None) -> list[ActionSpec]:
-    """Primitive robot skills, plus perception tools (``scene``), composite skill
-    tools (``runner``) and object search (``search``) when given."""
+def build_registry(p: PrimitiveSkills, scene=None, runner=None) -> list[ActionSpec]:
+    """Primitive robot skills, plus perception tools (``scene``) and composite skill
+    tools (``runner``) when given."""
     specs = _robot_specs(p)
     if scene is not None:
         specs += perception_specs(scene)
-    if search is not None:
-        specs.append(ActionSpec(
-            "search_object",
-            "Find an object that is not visible (usually hidden under the arm): looks with the env and "
-            "wrist cameras, then rotates J1 back and forth step by step and looks again. Returns the "
-            "object with base_xyz_mm when the env camera sees it. Returns the arm to its start if not found.",
-            search.search,
-            _obj({"color": {"type": "string", "enum": scene.colors},
-                  "max_sweep_deg": {"type": "number", "minimum": 5, "maximum": 40},
-                  "step_deg": {"type": "number", "minimum": 1, "maximum": 20}}, ["color"]),
-            moves_robot=True, delegates=True))
     if runner is not None:
         specs += skill_specs(runner)
     return specs

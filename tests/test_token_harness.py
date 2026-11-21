@@ -308,22 +308,6 @@ def test_wrist_centring_gives_up_when_mapping_is_wrong():
     assert not out["ok"] and ("converge" in out["detail"] or "would move" in out["detail"])
 
 
-def test_builtin_pick_place_skills_validate_in_dry_run(prims, tmp_path):
-    from agent.explore.pick_place_skills import ensure_pick_place_skills
-    lib = SkillLibrary(tmp_path / "s.json")
-    assert ensure_pick_place_skills(lib) == ["pick_block_wrist", "place_block_on_table"]
-    assert ensure_pick_place_skills(lib) == []              # never overwrites
-    r = SkillRunner(lib, constants={"table_z": 42.0}, require_validation=True)
-    ex = ActionExecutor(build_registry(prims, runner=r), mode="dry_run")
-    r.executor = ex
-    r.local = LocalSteps(prims, WristCam(355, 140), ex, settle_s=0)
-    pick = r.run("pick_block_wrist", {"color": "green", "x": -330, "y": -440, "z_top": 69.3, "rz": 70.9})
-    assert pick["ok"], pick
-    place = r.run("place_block_on_table", {"color": "green", "x": -230, "y": -440, "rz": 70.9})
-    assert place["ok"], place
-
-
-# ---------------------------------------------------------------- Phase 8: variants
 def test_variants_are_reproducible_and_v3_is_cheapest(tmp_path):
     from mock_world import run_variant
     res = {v: run_variant(v, tmp_path / v) for v in ("V0", "V1", "V2", "V3")}
@@ -354,30 +338,6 @@ def test_options_from_explore_yaml_dict():
 
 
 # ---------------------------------------------------------------- fixes after episode 20261113-164841
-def test_builtin_skill_upgrades_but_astra_versions_are_kept(tmp_path):
-    import copy
-
-    from agent.explore.pick_place_skills import PICK, ensure_pick_place_skills
-    lib = SkillLibrary(tmp_path / "s.json")
-    old = copy.deepcopy(PICK)
-    old.recovery = [{"tool": "open_gripper"}]
-    lib.save(old)
-    assert "pick_block_wrist" in ensure_pick_place_skills(lib)
-    s = lib.get("pick_block_wrist")
-    assert s.version == 2 and s.recovery == PICK.recovery and s.history[0]["recovery"] == [{"tool": "open_gripper"}]
-    lib.revise(Skill("pick_block_wrist", "Astra's own", steps=[{"tool": "get_state"}], tags=["pick"]))
-    assert ensure_pick_place_skills(lib) == [] and lib.get("pick_block_wrist").description == "Astra's own"
-
-
-def test_pick_has_no_measurement_lock_or_probe():
-    from agent.explore.pick_place_skills import BUILTIN, PICK
-    assert [s.name for s in BUILTIN] == ["pick_block_wrist", "place_block_on_table"]
-    assert PICK.steps[0]["routine"] == "approach"
-    routines = [s.get("routine") for s in PICK.steps]
-    assert "probe_top" not in routines and "grasp_ladder" in routines
-    assert not any(c["check"] == "contact_calibrated" for c in PICK.preconditions)
-
-
 def test_z_top_must_match_the_taught_cube_top():
     local = LocalSteps(None, None, None, block_top_z=69.3, settle_s=0)
     assert local.check("z_top_plausible", {}, z_top=72)["ok"]
@@ -551,9 +511,9 @@ def test_lift_detours_towards_the_base_when_out_of_reach():
 
 
 def test_autonomous_runner_runs_candidates_without_promoting(prims, tmp_path):
-    from agent.explore.pick_place_skills import ensure_pick_place_skills
+    from pick_place_fixture import ensure_pick_place_skills
     lib = SkillLibrary(tmp_path / "s.json")
-    ensure_pick_place_skills(lib)
+    ensure_pick_place_skills(lib)                     # skills tagged "builtin" (old libraries still hold them)
     r = SkillRunner(lib, constants={"table_z": 42.0}, require_validation=False)
     ex = ActionExecutor(build_registry(prims, runner=r), mode="live")
     r.executor = ex

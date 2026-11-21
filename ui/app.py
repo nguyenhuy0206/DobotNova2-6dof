@@ -243,7 +243,7 @@ def main():
     Handler.skills = SkillsAPI(create_primitives(actions=Handler.actions, owner=True))
     hub = CameraHub(cfg.cameras)
     if os.environ.get("NOVA2_DEPTH") == "1" and "env" in hub:
-        hub.select_device("env", "realsense", 0)     # scripts/run_ui.sh --depth
+        hub.select_device("env", "realsense", 0)     # scripts/run_vision.sh
     Handler.cameras = CameraAPI(hub, robot_state=Handler.skills.state)
     server = ThreadingHTTPServer((cfg.ui_host, args.port), Handler)
     log.info("Nova 2 Control: http://%s:%d  (robot %s)", cfg.ui_host, args.port, args.ip)

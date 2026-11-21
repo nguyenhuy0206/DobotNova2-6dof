@@ -345,7 +345,7 @@ def run_benchmark(args, serial):
     framesets = 0
     timeouts = 0
     print()
-    print(f"  capturing ... ", end="", flush=True)
+    print("  capturing ... ", end="", flush=True)
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < args.seconds:
         try:

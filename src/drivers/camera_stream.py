@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -142,7 +142,7 @@ class CameraStream:
         import os
         import sys
         if self.cfg.source == "realsense" and sys.platform == "darwin" and os.geteuid() != 0:
-            return " — on macOS depth needs root: restart with  scripts/run_ui.sh --depth"
+            return " — on macOS depth needs root: restart with  scripts/run_vision.sh"
         return ""
 
     # -- capture thread --------------------------------------------------

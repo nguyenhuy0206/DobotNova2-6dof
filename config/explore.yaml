@@ -45,7 +45,6 @@ skills:
   # 20 Nov: promotion only by the operator citing judge ledger passes from two distinct episodes.
   # true = the old supervised mode: every candidate run needs the operator's y.
   require_validation: false
-  builtin_pick_place: false     # 20 Nov: off — the built-in skills rest on the colour detector (operator: no baseline)
 diagnosis:
   gate_after_repeats: 2         # refuse run_skill/save_skill only when the SAME failure repeats 2× undiagnosed (0 = never)
 reflect_max_steps: 6            # one reflection pass after each episode, ≤ 6 model calls
