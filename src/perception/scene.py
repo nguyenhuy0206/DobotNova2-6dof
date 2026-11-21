@@ -90,6 +90,8 @@ class Scene:
         # Objects higher than this (robot base Z, mm) are parts of the robot itself
         # (coloured tape on the arm/wrist camera), not things on the table. None = off.
         self.object_z_max: float | None = None
+        self.last_frames: dict = {}                    # camera -> (frame, time) of the last look
+        self.wrist_overlay = None                      # perception.wrist_overlay.WristOverlay (fingertips in the wrist picture)
         self.sources = sources                       # camera name -> object with read() -> Frame
         self.env_calibration = env_calibration       # None = not calibrated yet
         self.ranges = {k: [tuple(map(tuple, r)) for r in v] for k, v in cfg.colors.items()} or None
@@ -179,24 +181,30 @@ class Scene:
                 return False
         return all(lo - margin_mm <= c <= hi + margin_mm for c, (lo, hi) in zip(xyz_mm, bounds))
 
-    def look(self, camera: str = "env", colors: list[str] | None = None,
-             zoom: list[int] | None = None, image: str = "auto") -> dict:
-        """zoom=[x, y, w, h] (full-image pixels): return that region enlarged — small
-        objects far from the camera are only a few pixels wide in the full view.
-        Object pixels are always in full-image coordinates. ``image`` is read by the
-        harness (auto | always | never: whether the picture goes to the model)."""
+    def look(self, camera: str = "env", zoom: list[int] | None = None, **_ignored) -> dict:
+        """The camera picture and nothing else: no detection here (20 Nov, operator: Astra finds the
+        objects in the image itself). zoom=[x, y, w, h] (full-image pixels) returns that region enlarged.
+        The frame is kept so depth_at answers for exactly the pixels of this picture."""
         frame = self.observe(camera)
-        objects = []
-        for color in colors or self.colors:
-            objects += [o.summary() for o in self.find(color, camera, frame)]
+        if camera == "env" and frame.depth_m is not None and self.depth_frames > 1:
+            frame = self._median_depth(camera, frame)
+        self.last_frames[camera] = (frame, time.time())
         h, w = frame.color.shape[:2]
-        missing = {c: self.last_seen_info(c) for c in (colors or self.colors)
-                   if not any(o["label"] == c for o in objects) and c in self.last_seen}
         result = {"camera": camera, "image_size": [w, h], "has_depth": frame.depth_m is not None,
                   "calibrated": camera == "env" and self.env_calibration is not None,
-                  "objects": objects, "not_visible_last_seen": missing,
-                  "captured_ns": frame.captured_ns, "sequence_id": frame.sequence_id,
-                  "stream_id": frame.stream_id, "legacy": frame.captured_ns is None}
+                  "frame": frame.sequence_id, "captured_ns": frame.captured_ns,
+                  "sequence_id": frame.sequence_id, "stream_id": frame.stream_id,
+                  "legacy": frame.captured_ns is None}
+        picture = frame.color
+        if camera == "wrist" and self.wrist_overlay is not None:
+            try:
+                tips = self.wrist_overlay()["fingertips_px"]
+            except Exception as exc:  # noqa: BLE001 — no robot state: the picture without the marks
+                result["fingertips_px"] = f"not available ({exc})"[:120]
+            else:
+                picture = frame.color.copy()
+                self.wrist_overlay.draw(picture, tips)
+                result["fingertips_px"] = tips
         if zoom and (int(zoom[2]) <= 0 or int(zoom[3]) <= 0 or
                      (int(zoom[0]) <= 0 and int(zoom[1]) <= 0 and int(zoom[2]) >= w and int(zoom[3]) >= h)):
             zoom = None                                  # [0,0,0,0] / whole image: no crop (was an 8x8 crop)
@@ -204,14 +212,80 @@ class Scene:
             x, y, zw, zh = (int(v) for v in zoom)
             x, y = max(0, min(x, w - 8)), max(0, min(y, h - 8))
             zw, zh = max(8, min(zw, w - x)), max(8, min(zh, h - y))
-            crop = frame.color[y:y + zh, x:x + zw]
-            shifted = [{**o, "bbox": [o["bbox"][0] - x, o["bbox"][1] - y, *o["bbox"][2:]]} for o in objects
-                       if x <= o["pixel"][0] < x + zw and y <= o["pixel"][1] < y + zh]
             result["zoom"] = [x, y, zw, zh]
-            result["image_jpeg_b64"] = self.encode_image(crop, shifted, upscale=True)
+            result["image_jpeg_b64"] = self.encode_image(picture[y:y + zh, x:x + zw], [], upscale=True)
         else:
-            result["image_jpeg_b64"] = self.encode_image(frame.color, objects)
+            result["image_jpeg_b64"] = self.encode_image(picture, [])
         return result
+
+    depth_frames = 1          # env look: per-pixel median over N frames. 20 Nov: frame-to-frame noise is only
+                              # ±0–1.3 mm on the cubes; the error is systematic, so 1 (no extra frames)
+
+    def _median_depth(self, camera: str, frame):
+        """The picture's frame with its depth replaced by the per-pixel median over depth_frames frames
+        (zeros = no depth are ignored). 20 Nov: single-frame D455 depth moved the same cube by ±5 mm."""
+        from dataclasses import replace
+        stack = [frame.depth_m]
+        for _ in range(self.depth_frames - 1):
+            try:
+                f = self.observe(camera)
+            except Exception:  # noqa: BLE001 — fewer frames, still a median
+                break
+            if f.depth_m is not None and f.depth_m.shape == frame.depth_m.shape:
+                stack.append(f.depth_m)
+        d = np.stack(stack).astype(np.float32)
+        d[~np.isfinite(d) | (d <= 0)] = np.nan
+        with np.errstate(all="ignore"):
+            med = np.nanmedian(d, axis=0)
+        return replace(frame, depth_m=np.nan_to_num(med, nan=0.0).astype(np.float32))
+
+    def depth_at(self, pixels: list, window_px: int = 2, plane_z: float | None = None) -> dict:
+        """Depth of the env camera at the given pixels of the LAST env look (same frame as that picture):
+        per pixel the median of the valid depth in a (2*window_px+1)^2 window, the 3D point in the camera
+        frame and, when calibrated, in the robot base frame. No detection, no filtering."""
+        if "env" not in self.last_frames:
+            raise ValueError("look at the env camera first: depth_at answers for the pixels of that picture")
+        frame, at = self.last_frames["env"]
+        if frame.depth_m is None or frame.intrinsics is None:
+            raise ValueError("the env picture has no depth (D455 depth helper not running)")
+        if not isinstance(pixels, list) or not 1 <= len(pixels) <= 50:
+            raise ValueError("pixels: a list of 1–50 [u, v] pairs in full-image coordinates")
+        h, w = frame.depth_m.shape[:2]
+        k, n = frame.intrinsics, max(0, min(int(window_px), 10))
+        out = []
+        for p in pixels:
+            u, v = int(round(float(p[0]))), int(round(float(p[1])))
+            if not (0 <= u < w and 0 <= v < h):
+                out.append({"pixel": [u, v], "error": f"outside the image {w}x{h}"})
+                continue
+            win = frame.depth_m[max(0, v - n):v + n + 1, max(0, u - n):u + n + 1]
+            valid = win[np.isfinite(win) & (win > 0)]
+            row = {"pixel": [u, v], "valid_fraction": round(valid.size / win.size, 2)}
+            if plane_z is not None and self.env_calibration is not None:
+                ray = np.array([(u - k.cx) / k.fx, (v - k.cy) / k.fy, 1.0])
+                T = np.asarray(self.env_calibration.T, float)
+                o, dirb = T[:3, 3] * (1000.0 if np.abs(T[:3, 3]).max() < 5 else 1.0), T[:3, :3] @ ray
+                if abs(dirb[2]) > 1e-9 and (float(plane_z) - o[2]) / dirb[2] > 0:
+                    row["at_plane_xyz_mm"] = [round(float(c), 1) for c in o + dirb * (float(plane_z) - o[2]) / dirb[2]]
+            if valid.size:
+                d = float(np.median(valid))
+                row["depth_spread_mm"] = round(float(np.percentile(valid, 90) - np.percentile(valid, 10)) * 1000, 1)
+                cam = deproject_pixel(u, v, d, k.fx, k.fy, k.cx, k.cy)
+                row.update(depth_mm=round(d * 1000, 1), camera_xyz_mm=[round(float(c) * 1000, 1) for c in cam])
+                if self.env_calibration is not None:
+                    row["base_xyz_mm"] = [round(float(c), 1) for c in self.env_calibration.camera_to_base(cam).tolist()]
+            out.append(row)
+        # the same picture with the asked pixels numbered: in a bounded context the look image is gone by the
+        # time the depths arrive (20 Nov 164149: look -> depth_at -> look again, same pixels, 3x)
+        import cv2
+        img = frame.color.copy()
+        for i, row in enumerate(out):
+            u, v = row["pixel"]
+            if 0 <= u < w and 0 <= v < h:
+                cv2.drawMarker(img, (u, v), (255, 0, 255), cv2.MARKER_CROSS, 12, 1)
+                cv2.putText(img, str(i), (u + 4, v - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+        return {"camera": "env", "frame": frame.sequence_id, "picture_age_s": round(time.time() - at, 1),
+                "points": out, "image_jpeg_b64": self.encode_image(img, [])}
 
     def find_report(self, color: str, camera: str = "env") -> dict:
         """Tool-friendly result: current detections + last sighting when hidden."""

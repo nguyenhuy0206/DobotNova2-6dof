@@ -38,6 +38,8 @@ class ImagePolicy:
             return False, "you asked image=never"
         if self.mode == "all":
             return True, "policy all"
+        if "objects" not in result:          # 20 Nov: look returns the picture only — the picture IS the result
+            return True, "the picture is the result of look"
         thumb = _thumb(result.get("image_jpeg_b64"))
         if thumb is not None and camera in self._last_sent and request != "always":
             if _diff(thumb, self._last_sent[camera]) < self.same_threshold:

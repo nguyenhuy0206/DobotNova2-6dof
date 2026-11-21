@@ -16,6 +16,7 @@ data/calibration/*
 data/archive/*
 data/models/*
 data/student/*
+data/judge/*
 !data/**/.gitkeep
 
 .DS_Store

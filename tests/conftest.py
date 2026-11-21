@@ -13,6 +13,12 @@ from memory.store import PositionStore  # noqa: E402
 from sim_robot import FakeGripper, SimNova2  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolated_judge_data(tmp_path, monkeypatch):
+    """Synthetic runs must never populate the operator's private runtime ledger."""
+    monkeypatch.setattr("judge.ledger.LEDGER_FILE", tmp_path / "judge" / "ledger.jsonl")
+
+
 @pytest.fixture
 def sim():
     return SimNova2()

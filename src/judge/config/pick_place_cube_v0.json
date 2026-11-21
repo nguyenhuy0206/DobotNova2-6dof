@@ -1,0 +1,20 @@
+{
+  "task": "pick_place_cube_v0",
+  "object_id": "operator_bound_cube",
+  "object_color": null,
+  "destination": [],
+  "finger_reference": null,
+  "calibration_hash": null,
+  "validated_predicates": [],
+  "initial": ["object_identifiable", "object_outside_destination"],
+  "required_sequence": ["held_after_lift", "placed_on_table"],
+  "deadline_s": 60,
+  "unknown": "no_credit",
+  "max_age_ns": 2000000000,
+  "max_skew_ns": 500000000,
+  "min_lift_mm": 30,
+  "alignment_px": 10,
+  "alignment_deg": 10,
+  "table_tolerance_mm": 3,
+  "persistence_ns": 500000000
+}

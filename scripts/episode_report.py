@@ -14,7 +14,7 @@ import argparse
 from collections import Counter
 
 import _bootstrap  # noqa: F401
-from agent.explore.learning import history
+from judge.ledger import JudgeLedger
 from memory.store import EpisodeStore
 
 COLUMNS = ["episode", "variant", "outcome", "moved", "calls", "tokens", "cached", "max_ctx", "images",
@@ -27,14 +27,14 @@ def row(store: EpisodeStore, ep: str, verdicts: dict) -> dict:
     usage = [e for e in log if e.get("event") == "usage"]
     metrics = next((e for e in reversed(log) if e.get("event") == "metrics"), None)
     calls = metrics["model_calls"] if metrics else sum(1 for e in log if e.get("event") == "model")
-    v = verdicts.get(ep)
+    v = verdicts.get(ep) or {"status": "inconclusive", "success_credit": False}
     names = Counter(e["name"] for e in tools)
     failed = sum(1 for e in tools if not (e.get("result") or {}).get("ok"))
     tok = sum(u.get("total_tokens", 0) for u in usage) if usage and all("total_tokens" in u for u in usage) else None
     return {
         "episode": ep, "variant": (log[0].get("meta") or {}).get("variant", "V0*"),
-        "outcome": "-" if v is None else ("SUCCESS" if v["success"] else "FAIL"),
-        "moved": "-" if v is None else v["blocks_moved"], "calls": calls,
+        "outcome": v["status"].upper(),
+        "moved": int(v["success_credit"]), "calls": calls,
         "tokens": "n/a" if tok is None else f"{tok:,}",
         "cached": "n/a" if tok is None else f"{sum(u.get('cached_tokens', 0) for u in usage):,}",
         "max_ctx": "n/a" if tok is None else f"{max(u.get('input_tokens', 0) for u in usage):,}",
@@ -55,7 +55,8 @@ def main() -> None:
     args = ap.parse_args()
     store = EpisodeStore()
     eps = store.list()[-args.last:] if args.last else store.list()
-    verdicts = {h["episode"]: h for h in history(last=100000)}
+    ledger = JudgeLedger()
+    verdicts = {ep: ledger.outcome(ep) for ep in eps}
     rows = [row(store, ep, verdicts) for ep in eps]
     widths = {c: max(len(c), *(len(str(r[c])) for r in rows)) if rows else len(c) for c in COLUMNS}
     print("  ".join(c.ljust(widths[c]) for c in COLUMNS))

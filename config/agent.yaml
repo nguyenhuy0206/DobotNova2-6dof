@@ -9,7 +9,9 @@ api_key_env: gpt6-key     # name of the key variable in .env
 base_url: https://modelapi.vn/v1
 max_output_tokens: 1000
 max_steps: 20            # model ⇄ tool round-trips per task
-max_speed: 10            # % cap on robot speed for everything Astra does (higher requests are clamped)
+reasoning_summary: auto   # 20 Nov: log a summary of Astra's reasoning per request (episode 'model' events)
+max_speed: 50            # % cap on robot speed for everything Astra does (higher requests are clamped); 20 Nov: 4 -> 20 -> 50 (operator)
+fixed_speed: 50          # 20 Nov (operator): every motion at exactly 50 %, whatever speed Astra asks for
 
 # dry_run  validate tool calls, never touch hardware   (default — start here)
 # confirm  ask on the terminal before each motion/gripper tool

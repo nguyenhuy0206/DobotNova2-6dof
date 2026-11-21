@@ -148,3 +148,9 @@ def test_a_drop_during_a_move_is_a_failure_for_diagnosis_and_observations():
     fake._state = lambda: {"gripper": {"grip_status": "object caught", "position": 640}}
     AgentHarness._mark_drop(fake, held)
     assert "failure" not in held["result"]
+
+
+def test_depth_queries_are_observation_not_a_repeat():
+    """20 Nov 164149: look + depth_at on the same pixels 3x ended the episode as 'repeated'."""
+    from agent.repeats import signature
+    assert signature("depth_at", {"pixels": [[260, 195]]}, {"ok": True, "result": {}}) is None

@@ -74,7 +74,7 @@ def test_metrics_count_grasps_and_safety_stops():
     m.add_action("move_relative", {"ok": False, "error": "move_relative: CONTACT at fingertip Z=62.8"})
     m.add_action("run_skill", {"ok": True, "result": {"ok": False, "grasp_attempts": 2}})
     s = m.summary()
-    assert s["grasp_attempts"] == 3 and s["safety_stops"] == 1 and s["skill_failures"] == 1
+    assert s["grasp_attempts"] == 1 and s["safety_stops"] == 1 and s["skill_claim_failures"] == 1
 
 
 def test_token_budget_stops_episode(prims, tmp_path):
@@ -234,7 +234,7 @@ def test_candidate_skill_needs_operator(runner, sim):
     out = runner.executor.execute("run_skill", {"name": "up"})
     assert out["ok"] and out["result"]["ok"]
     ev = runner.library.get("up").evidence
-    assert ev[-1]["supervised"] and ev[-1]["ok"]
+    assert ev[-1]["supervised"] and ev[-1]["claim"]["ok"]
 
 
 def test_promotion_needs_supervised_successes_and_rollback(runner):
@@ -243,13 +243,12 @@ def test_promotion_needs_supervised_successes_and_rollback(runner):
     runner.run("up")
     assert not lib.promote("up", 2)["promoted"]
     runner.run("up")
-    assert lib.promote("up", 2)["promoted"] and lib.get("up").validation_status == "validated"
-    runner.supervisor = None
-    assert runner.run("up")["ok"]                          # validated: no approval needed
+    assert not lib.promote("up", 2)["promoted"]            # claims cannot validate a skill
+    assert lib.get("up").validation_status == "candidate"
     runner.save("up", "lift more", [{"tool": "move_relative", "args": {"dz": 20}}])
     assert lib.get("up").validation_status == "candidate"  # a new version starts untrusted
     out = lib.rollback("up", 1)
-    assert out["rolled_back"] and lib.get("up").validation_status == "validated" and lib.get("up").version == 3
+    assert out["rolled_back"] and lib.get("up").validation_status == "candidate" and lib.get("up").version == 3
 
 
 def test_saved_skills_cannot_touch_memory_or_go_down_in_recovery(runner):
@@ -580,8 +579,8 @@ def test_autonomous_runner_runs_candidates_and_promotes(prims, tmp_path):
     r.executor = ex
     lib.add_evidence("place_block_on_table", True, False)
     lib.add_evidence("place_block_on_table", True, False)
-    assert lib.auto_promote("place_block_on_table", 2)["promoted"]
-    assert lib.get("place_block_on_table").validation_status == "validated"
+    assert lib.auto_promote("place_block_on_table", 2) is None
+    assert lib.get("place_block_on_table").validation_status == "candidate"
     lib.add_evidence("pick_block_wrist", True, False)
     lib.add_evidence("pick_block_wrist", False, False)
     assert lib.auto_promote("pick_block_wrist", 2) is None          # a failure among the last runs
@@ -599,5 +598,23 @@ def test_prompt_carries_the_skill_index_not_descriptions(tmp_path):
     lib.save(Skill(name="old_one", description="old", steps=[], params={}))
     lib.retire("old_one", "never run")
     text = AgentHarness(None, None, AgentConfig(), skills=lib)._instructions("pick a block")
-    assert "pick_x v1 [candidate] 0 ok / 0 failed · params x" in text
+    assert "pick_x v1 [candidate] · params x" in text
+    assert "camera-verified outcomes" not in text
     assert "SECRET RAW TEXT" not in text and "old_one" not in text
+
+
+def test_free_chunks_run_the_whole_plan_but_options_cap_stays_without_it():
+    """20 Nov (operator): no horizon by zone and no verification boundary; errors still end the plan."""
+    from types import SimpleNamespace as C
+    from agent.chunking import ChunkPolicy
+    o = HarnessOptions.from_variant("V3", free_chunks=True)
+    assert o.chunk.free and o.chunk.max_horizon >= 20
+    plan = [C(name="move_to_pose", parsed_args={"z": 60}), C(name="close_gripper", parsed_args={}),
+            C(name="move_relative", parsed_args={"dz": 80}), C(name="move_to_pose", parsed_args={"z": 160}),
+            C(name="open_gripper", parsed_args={})]
+    run, deferred, why = o.chunk.split(plan, tip_z=150, zone_top=120, grip=1000)
+    assert len(run) == 5 and not deferred
+    strict = ChunkPolicy(enabled=True, max_horizon=4)
+    run, deferred, _ = strict.split(plan, tip_z=150, zone_top=120, grip=1000)
+    assert len(run) < 5 and deferred                        # the old policy still splits
+    assert HarnessOptions.from_variant("V3", max_horizon=9).chunk.max_horizon == 4

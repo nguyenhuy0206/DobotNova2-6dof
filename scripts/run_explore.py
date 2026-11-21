@@ -9,7 +9,7 @@
     scripts/run_explore.sh --review-all        no robot: one review across ALL grasp episodes -> concrete skills
     scripts/run_explore.sh --variant V0        harness variant for this run (V0 baseline … V3 default)
     scripts/run_explore.sh --driver qwen       the local student model drives (src/student/), no review
-    scripts/run_explore.sh --promote NAME      operator: candidate skill -> validated (needs supervised successes)
+    scripts/run_explore.sh --promote NAME      operator: candidate skill -> validated (cite --ledger-entry IDs)
     scripts/run_explore.sh --rollback NAME 2   operator: restore version 2 of a skill as the newest version
     scripts/run_explore.sh --skills            list skills with version, status and evidence
 
@@ -41,6 +41,8 @@ def main() -> None:
     ap.add_argument("--variant", choices=["V0", "V1", "V2", "V3"], help="harness variant (default: explore.yaml)")
     ap.add_argument("--driver", choices=["astra", "qwen"], help="who drives the robot (default: explore.yaml driver)")
     ap.add_argument("--promote", metavar="NAME", help="operator: mark a candidate skill validated")
+    ap.add_argument("--ledger-entry", action="append", default=[], metavar="EVALUATION_ID",
+                    help="operator: cite a finalized judge pass for promotion (repeatable)")
     ap.add_argument("--rollback", nargs=2, metavar=("NAME", "VERSION"), help="operator: restore a skill version")
     ap.add_argument("--skills", action="store_true", help="list skills and exit")
     args = ap.parse_args()
@@ -80,6 +82,7 @@ def main() -> None:
             print(f"  ✗ {msg}")
         raise SystemExit(1)
     print(f"  collision detection: {s.arm_collision_detection()}")
+    print(f"  controller SpeedFactor: {s.set_global_speed()}")
 
     task = args.task or s.cfg.task
     episodes = args.episodes or s.cfg.episodes
@@ -157,7 +160,7 @@ def skill_admin(args) -> None:
     cfg = load_explore_config()
     lib = SkillLibrary(REPO_ROOT / cfg.skills_file)
     if args.promote:
-        print(lib.promote(args.promote, cfg.skills.min_supervised_successes))
+        print(lib.promote(args.promote, cfg.skills.min_supervised_successes, evaluation_ids=args.ledger_entry))
     if args.rollback:
         print(lib.rollback(args.rollback[0], int(args.rollback[1])))
     _print_skills(lib.all())

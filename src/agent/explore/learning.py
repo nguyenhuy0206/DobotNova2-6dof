@@ -81,35 +81,63 @@ def summarize_episode(store: EpisodeStore, episode_id: str, limit: int = 14000) 
 
 
 class OutcomeRecorder:
-    def __init__(self, store: EpisodeStore, index_file=INDEX_FILE):
+    def __init__(self, store: EpisodeStore, index_file=INDEX_FILE, ledger=None):
+        from judge.ledger import JudgeLedger
+        self.ledger = ledger or JudgeLedger()
         self.store, self.index_file = store, index_file
-        self.episode_id: str | None = None
+        self._episode_id: str | None = None
+        self._outcome = {"status": "inconclusive", "success_credit": False, "evaluation_id": None}
         self.last: dict | None = None
+
+    @property
+    def episode_id(self):
+        return self._episode_id
+
+    @episode_id.setter
+    def episode_id(self, value):
+        # Read authority when the harness binds the review, never in an Astra tool.
+        self._episode_id = value
+        self._outcome = self.ledger.outcome(value)
 
     def record(self, success: bool, blocks_moved: int = 0, summary: str = "") -> dict:
         if self.episode_id is None:
             raise RuntimeError("no episode to record")
-        rec = {"episode": self.episode_id, "success": bool(success), "blocks_moved": int(blocks_moved),
-               "summary": str(summary)[:500], "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        outcome = self._outcome
+        rec = {"episode": self.episode_id, "success": outcome["success_credit"],
+               "status": outcome["status"], "evaluation_id": outcome["evaluation_id"],
+               "claim": {"success": bool(success), "blocks_moved": int(blocks_moved), "summary": str(summary)[:500]},
+               "at": time.strftime("%Y-%m-%d %H:%M:%S")}
         self.store.append(self.episode_id, {"event": "outcome", **rec})
         self.index_file.parent.mkdir(parents=True, exist_ok=True)
         with self.index_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         self.last = rec
-        return {"recorded": rec}
+        return {"recorded": {"episode": self.episode_id, "claim": rec["claim"]}}
 
 
-def history(index_file=INDEX_FILE, last: int = 10) -> list[dict]:
-    if not index_file.exists():
-        return []
-    rows = [json.loads(line) for line in index_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-    latest = {r["episode"]: r for r in rows}             # a re-review replaces the earlier verdict
+def history(index_file=INDEX_FILE, last: int = 10, ledger=None, *, claims_only=False) -> list[dict]:
+    rows = ([json.loads(line) for line in index_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if index_file.exists() else [])
+    latest = {r["episode"]: r for r in rows}             # reviews replace claims, never verdicts
+    if claims_only:
+        return [{"episode": r["episode"], "at": r.get("at"),
+                 "claim": r.get("claim") or {k: r.get(k) for k in ("success", "blocks_moved", "summary")}}
+                for r in sorted(latest.values(), key=lambda r: r["episode"])[-last:]]
+    from judge.ledger import JudgeLedger
+    ledger = ledger or JudgeLedger()
+    for row in ledger.rows():
+        if row["event"] == "episode_end":
+            latest.setdefault(row["episode_id"], {"episode": row["episode_id"], "claim": None, "at": ""})
+    for r in latest.values():
+        outcome = ledger.outcome(r["episode"])
+        r.update(success=outcome["success_credit"], status=outcome["status"], evaluation_id=outcome["evaluation_id"])
+        r["blocks_moved"] = int(outcome["success_credit"])
     return sorted(latest.values(), key=lambda r: r["episode"])[-last:]
 
 
 def reflect_executor(main: ActionExecutor, recorder: OutcomeRecorder) -> ActionExecutor:
     spec = ActionSpec("record_episode_outcome",
-                      "Record how the episode went: success (the task achieved deliberately, verified by camera), "
+                      "Record your claim about the episode: success (the task achieved deliberately, verified by camera), "
                       "blocks_moved (objects the task asked to move, deliberately moved where it wanted them), summary.",
                       recorder.record,
                       _obj({"success": {"type": "boolean"}, "blocks_moved": {"type": "integer", "minimum": 0},

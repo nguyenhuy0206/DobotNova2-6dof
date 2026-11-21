@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -39,16 +40,13 @@ log = get_logger(__name__)
 DEFAULT_INSTRUCTIONS = (
     "You control a Dobot Nova 2 six-axis arm with a PGC gripper and an RGB-D camera. "
     "Only act through the provided tools; each motion tool blocks until it has finished. "
-    "Perceive before acting: use look / find_objects to locate things (base_xyz_mm is in robot "
-    "coordinates), and get_state before moving. Prefer existing skills (list_skills, run_skill) "
+    "Perceive before acting: look returns camera pictures; depth_at gives the D455 depth and robot "
+    "coordinates (base_xyz_mm) at pixels of the last env picture; get_state before moving. Prefer existing skills (list_skills, run_skill) "
     "over long chains of primitives. After a task succeeds, verify with look, then save_skill "
     "the sequence that worked. Use conservative speeds. If a tool returns an error, do not retry "
     "blindly: call get_state and look, then explain or adjust."
     " Poses are FINGERTIP positions (the gripper length is handled for you). To work on an object, "
-    "point the gripper straight down (rx=180, ry=0) and use the object's base_xyz_mm: hover at "
-    "z = object z + 100, never below the object's top surface unless grasping."
-    " The arm often hides objects from the env camera when it is above them: then use last_seen "
-    "from find_objects, or call search_object (it rotates J1 back and forth and looks again)."
+    "point the gripper straight down (rx=180, ry=0)."
 )
 
 CHUNK_HINT = (
@@ -57,15 +55,32 @@ CHUNK_HINT = (
     "action or skill, after any error) and tells you which calls were NOT executed. Batch routine "
     "steps (e.g. free-space move + look) instead of one call per turn."
 )
+FREE_CHUNK_HINT = (
+    "\n\nACTION PLANS: you may return several tool calls in one turn; they run in order, one after another. "
+    "Each one is checked when it runs (target, path, collisions, table); after any error or refusal the rest "
+    "of that turn's calls are not executed and the result tells you which."
+)
 BOUNDED_HINT = (
     "\n\nCONTEXT: every request is self-contained: TASK, STATE measured by the harness, a digest of the "
     "episode so far, your last turns and the results of your last calls. Earlier images are not "
-    "repeated; look results always contain the detected objects as data, and an image is attached "
-    "only when it adds information (look with image='always' if you need to see)."
+    "repeated; look again to see the scene now."
 )
 
 
-STOP_TEXTS = ("not arrived after", "robot alarm during motion")
+def reasoning_summary(response) -> str:
+    """The model's reasoning summary items joined (empty when not asked for / not given). Log only: it never
+    goes back into the context."""
+    parts = []
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) == "reasoning":
+            for s in getattr(item, "summary", None) or []:
+                text = getattr(s, "text", None) if not isinstance(s, dict) else s.get("text")
+                if text:
+                    parts.append(text)
+    return "\n".join(parts)
+
+
+STOP_TEXTS = ("not arrived after", "robot alarm during motion", "robot PAUSED")
 
 
 def motion_stopped(result: dict) -> str | None:
@@ -100,7 +115,10 @@ class HarnessOptions:
                    context=ContextPolicy(mode="bounded" if bounded else "chain",
                                          recent_turns=int(cfg.get("recent_turns", 4)),
                                          summary_max_chars=int(cfg.get("summary_max_chars", 4000))),
-                   chunk=ChunkPolicy(enabled=chunked, max_horizon=max(1, min(4, int(cfg.get("max_horizon", 4))))),
+                   chunk=(ChunkPolicy(enabled=chunked, free=True, max_horizon=50,
+                                      max_calls=max(1, int(cfg.get("max_calls", 50))))
+                          if cfg.get("free_chunks") else
+                          ChunkPolicy(enabled=chunked, max_horizon=max(1, min(4, int(cfg.get("max_horizon", 4)))))),
                    images=ImagePolicy(mode="selective" if bounded else "all",
                                       env_detail=cfg.get("env_image_detail", "low"),
                                       wrist_detail=cfg.get("wrist_image_detail", "high")),
@@ -113,7 +131,9 @@ class AgentHarness:
     def __init__(self, client: AstraClient, executor: ActionExecutor, config: AgentConfig,
                  episodes: EpisodeStore | None = None, skills: SkillLibrary | None = None,
                  send_images: bool = True, notes=None, options: HarnessOptions | None = None,
-                 state_fn=None, skill_runner=None, investigation=None, observer=None):
+                 state_fn=None, skill_runner=None, investigation=None, observer=None, judge=None):
+        from judge.harness import HarnessJudge
+        from judge.ledger import JudgeLedger
         self.client = client
         self.notes = notes          # memory.knowledge.KnowledgeStore (or legacy NotesStore): what earlier runs found
         self.observer = observer    # (name, args, result) -> {"id", "prediction_errors"?}: the harness records
@@ -122,6 +142,9 @@ class AgentHarness:
         self.config = config
         self.episodes = episodes or EpisodeStore()
         self.skills = skills or SkillLibrary()
+        # judge=False: no verification (Astra's review of an episode is not a robot episode)
+        self.judge = None if judge is False else (judge or getattr(executor, "judge", None)
+                                                  or HarnessJudge(ledger=JudgeLedger()))
         self.send_images = send_images
         self.options = options or HarnessOptions()
         self.state_fn = state_fn        # () -> compact measured state for the bounded context
@@ -140,19 +163,18 @@ class AgentHarness:
         if not isinstance(payload, dict) or "image_jpeg_b64" not in payload:
             return None
         image = payload.pop("image_jpeg_b64")
-        path = self.episodes.save_image(episode, f"{step:03d}-{name}.jpg", image)
+        path = self.episodes.save_image(episode, f"{step:03d}-{name}-{uuid.uuid4().hex}.jpg", image)
         payload["image_file"] = str(path)
         return image
 
     def _instructions(self, task: str) -> str:
         text = self.config.system_prompt or DEFAULT_INSTRUCTIONS
-        # the library as verified facts only (name, version, status, runs of the current version):
+        # Procedures and operator status only; execution claims are not verified outcomes.
         # descriptions are written experience and stay out of the prompt (list_skills NAME shows them)
         index = self.skills.index() if hasattr(self.skills, "index") else []
         if index:
-            text += ("\n\nYour skill library (runs = camera-verified outcomes of the CURRENT version; "
-                     "list_skills NAME shows its steps):\n" + "\n".join(
-                         f"- {s['name']} v{s['version']} [{s['status']}] {s['ok']} ok / {s['fail']} failed · "
+            text += ("\n\nYour skill library (list_skills NAME shows its steps):\n" + "\n".join(
+                         f"- {s['name']} v{s['version']} [{s['status']}] · "
                          f"params {', '.join(s['params'])}" for s in index))
         if self.notes:
             lessons = (self.notes.digest() if self.options.context.mode == "bounded" and hasattr(self.notes, "digest")
@@ -161,7 +183,9 @@ class AgentHarness:
                 header = getattr(self.notes, "prompt_header",
                                  "Your notes from earlier runs (facts you measured; re-check if they look wrong):")
                 text += "\n\n" + header + "\n" + lessons
-        if self.options.chunk.enabled:
+        if self.options.chunk.enabled and self.options.chunk.free:
+            text += FREE_CHUNK_HINT
+        elif self.options.chunk.enabled:
             text += CHUNK_HINT.format(L=self.options.chunk.max_horizon)
         if self.options.context.mode == "bounded":
             text += BOUNDED_HINT
@@ -211,7 +235,7 @@ class AgentHarness:
         if held.get("taken") or z - held["z0"] < 30 or "look" not in self.executor.specs:
             return
         held["taken"] = True
-        args = {"camera": "wrist", "image": "always"}
+        args = {"camera": "wrist"}
         r = self.executor.execute("look", args)
         self._take_image(episode, step, "post-lift-wrist", r)
         self.episodes.append(episode, {"event": "tool", "step": step, "name": "look", "auto": True, "post_lift": True,
@@ -257,12 +281,32 @@ class AgentHarness:
 
     # ------------------------------------------------------------------ main loop
     def run(self, task: str, images: list[str] | None = None) -> str:
+        """Finalize private verification even on model errors, timeouts or interruption."""
+        previous = self.executor.lifecycle
+        self._judge_started, self._episode_metrics = False, None
+        try:
+            return self._run(task, images)
+        finally:
+            self.executor.lifecycle = previous
+            if self._episode_metrics is not None:
+                self.last_metrics = self._episode_metrics.summary()
+                if self._judge_started:
+                    self.last_metrics.update(self.judge.finish())
+                self.episodes.append(self.last_episode, {"event": "metrics", **self.last_metrics})
+
+    def _run(self, task: str, images: list[str] | None = None) -> str:
         """images: base64 JPEGs shown with the task (e.g. evidence for a review)."""
         opt = self.options
         from memory.store import driver_of
         episode = self.episodes.start(task, {"model": self.config.model, "mode": self.executor.mode,
                                              "variant": opt.variant, "driver": driver_of({"model": self.config.model})})
         self.last_episode = episode
+        self.last_metrics = None
+        self._episode_metrics = EpisodeMetrics(variant=opt.variant)
+        if self.judge is not None:
+            self.judge.start(episode)
+            self._judge_started = True
+            self.executor.lifecycle = self.judge
         if hasattr(self.client, "start_episode"):       # a local model logs its own input/output per episode
             self.client.start_episode(self.episodes.root / episode)
         if self.skill_runner is not None:
@@ -273,7 +317,7 @@ class AgentHarness:
         self.last_diagnosis = None
         if inv is not None:
             inv.start(episode)
-        metrics = EpisodeMetrics(variant=opt.variant)
+        metrics = self._episode_metrics
         router = EventRouter()
         repeats, repeat_stop = RepeatGuard(opt.max_repeats), None
         robot_stopped = None              # a move the safety layer stopped: the episode ends, no further model turn
@@ -309,7 +353,8 @@ class AgentHarness:
         for step in range(self.config.max_steps):
             calls = [item for item in response.output if getattr(item, "type", None) == "function_call"]
             self.episodes.append(episode, {"event": "model", "step": step, "response_id": getattr(response, "id", None),
-                                           "text": response.output_text, "calls": len(calls)})
+                                           "text": response.output_text, "calls": len(calls),
+                                           **({"reasoning": r} if (r := reasoning_summary(response)) else {})})
             if not calls:
                 reason, final = "done", response.output_text
                 break
@@ -344,6 +389,11 @@ class AgentHarness:
                         result = {"ok": False, "action": call.name, "executed": False, "error": refusal}
                     else:
                         holding = self._moves(call.name) and call.name != "open_gripper" and self._holding()
+                        if call.name == "run_skill" and self.judge is not None and hasattr(self.skills, "dependency_hash"):
+                            dependency = self.skills.dependency_hash(call.parsed_args.get("name", ""))
+                            self.judge.session.skill_dependency_hash = dependency
+                            if self.skill_runner is not None:
+                                self.skill_runner.current_dependency_hash = dependency
                         result = self.executor.execute(call.name, call.parsed_args)
                         if holding:
                             self._mark_drop(result)
@@ -379,10 +429,6 @@ class AgentHarness:
                                                "events": [e.as_dict() for e in events]})
                 executed.append((call.name, call.parsed_args, result))
                 digests.append(digest_line(step, call.name, call.parsed_args, result, events))
-                if result.get("ok") and call.name == "run_skill" and (result.get("result") or {}).get("ok"):
-                    p = (call.parsed_args.get("params") or {})
-                    if "place" in call.parsed_args.get("name", "") and p.get("color"):
-                        wm.progress.append(f"{p['color']} placed at ({p.get('x')}, {p.get('y')}) — skill verified")
                 outputs.append({"type": "function_call_output", "call_id": call.call_id,
                                 "output": json.dumps(result, ensure_ascii=False, default=str)})
                 robot_stopped = robot_stopped or motion_stopped(result)
@@ -418,7 +464,7 @@ class AgentHarness:
             if bounded and self.send_images and "look" in self.executor.specs:
                 for camera in sorted(router.pending_image):
                     colors = [router.handling] if router.handling else None
-                    r = self.executor.execute("look", {"camera": camera, **({"colors": colors} if colors else {})})
+                    r = self.executor.execute("look", {"camera": camera})
                     img = self._take_image(episode, step, f"auto-look-{camera}", r)
                     router.classify("look", {"camera": camera, "colors": colors or []}, r)
                     router.image_delivered(camera)
@@ -456,5 +502,4 @@ class AgentHarness:
             self.episodes.append(episode, {"event": "diagnosis", **self.last_diagnosis})
         self.episodes.append(episode, {"event": "end", "reason": reason})
         self.last_metrics = metrics.summary()
-        self.episodes.append(episode, {"event": "metrics", **self.last_metrics})
         return final

@@ -152,7 +152,7 @@ def test_explore_tools_registered(p, tmp_path):
                                 extra_specs=explore_specs(lambda: {"visible": True}, NotesStore(tmp_path / "n"),
                                                           knowledge=KnowledgeStore(tmp_path / "c.json")))
     names = {s.name for s in executor.list()}
-    assert {"propose_hypothesis", "check_robot_in_view",
+    assert {"propose_hypothesis", "depth_at",
             "define_concept", "query_observations", "record_measurement", "read_history"} <= names
     assert not {"record_evidence", "generalize_hypothesis", "read_notes"} & names      # evidence is computed
     assert "write_note" not in names                                  # raw notes are not written any more
@@ -252,7 +252,8 @@ def test_approach_zone_short_slow_steps(table, sim):
     assert "SpeedL=10," in sim.motion_log[-1]
 
 
-def test_contact_stops_and_backs_off(table, sim):
+def test_contact_pauses_and_stays(table, sim):
+    """20 Nov (operator): on a contact only Pause(); no back-off (after Pause() it never ran, episode 185633)."""
     from common.errors import ContactError
 
     table.m.approach_height_mm, table.m.stall_s, table.m.move_timeout_s = 120, 0.05, 5
@@ -281,10 +282,11 @@ def test_contact_stops_and_backs_off(table, sim):
             fb["pose"][2] = 99.0
         return fb
     sim.feedback = feedback
-    with pytest.raises(ContactError, match=r"CONTACT at fingertip Z=95"):
+    with pytest.raises(ContactError, match=r"CONTACT at fingertip Z=95.*robot PAUSED"):
         table.move_relative(dz=-20)
-    assert sim.dashboard_log[-1] == "Pause()" or "Pause()" in sim.dashboard_log
-    assert sim.state["pose"][2] == pytest.approx(110)            # backed off 15 mm
+    assert "Pause()" in sim.dashboard_log
+    assert sim.state["pose"][2] == pytest.approx(95)             # stays where it stopped: no back-off move
+    assert len(sim.motion_log) == 1
 
 
 def _collision_world(sim, clears: bool):
@@ -309,26 +311,22 @@ def _collision_world(sim, clears: bool):
     sim.motion, sim.dashboard = motion, dashboard
 
 
-def test_collision_alarm_in_the_approach_zone_is_a_contact(table, sim):
+def test_collision_alarm_in_the_approach_zone_is_a_contact_and_pauses(table, sim):
     from common.errors import ContactError
 
     table.m.approach_height_mm, table.m.move_timeout_s, table.m.poll_s = 120, 5, 0.01
     _collision_world(sim, clears=True)
-    with pytest.raises(ContactError, match=r"CONTACT at fingertip Z=95.*collision detection"):
+    with pytest.raises(ContactError, match=r"CONTACT at fingertip Z=95.*collision detection.*robot PAUSED"):
         table.move_relative(dz=-20)
-    assert "ClearError()" in sim.dashboard_log
-    assert sim.state["pose"][2] == pytest.approx(110) and sim.state["error"] == 0    # cleared, backed off
+    assert "Pause()" in sim.dashboard_log and "ClearError()" not in sim.dashboard_log   # operator clears
+    assert sim.state["pose"][2] == pytest.approx(95) and len(sim.motion_log) == 1         # no back-off
 
 
-def test_collision_alarm_that_does_not_clear_stops(table, sim):
-    from common.errors import SafetyError
-
-    table.m.approach_height_mm, table.m.move_timeout_s, table.m.poll_s = 120, 5, 0.01
-    table.m.recovery_timeout_s = 0.5
-    _collision_world(sim, clears=False)
-    with pytest.raises(SafetyError, match="robot alarm during motion"):
-        table.move_relative(dz=-20)
-    assert sim.state["pose"][2] == pytest.approx(95)                                  # did not move again
+def test_a_paused_robot_ends_the_episode():
+    from agent.harness import motion_stopped
+    from actions.primitives import PAUSED
+    assert motion_stopped({"ok": False, "error": f"move_relative: CONTACT at fingertip Z=95 — {PAUSED}",
+                           "error_type": "ContactError"})
 
 
 def test_open_gripper_partial(p, gripper):

@@ -32,7 +32,7 @@
   };
   if (!ui.panel) return;
 
-  const state = { catalogue: new Map(), live: null, busy: false, polling: false };
+  const state = { catalogue: new Map(), live: null, busy: false, polling: false, savedPositions: null };
 
   // ---------------------------------------------------------------- helpers
   const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -78,6 +78,7 @@
     if (!spec) { notify(`Unknown skill ${name} — reload the skill list`); return; }
     if (spec.moves_robot && !isArmed()) { notify('Turn on "Workspace clear" first'); return; }
     if (state.busy) { notify('A skill is still running — wait, or press STOP'); return; }
+    if (name === 'go_to_position' && !args.name) { notify('Select a saved position first'); return; }
 
     const finalArgs = withDefaults(spec, args);
     setBusy(true);
@@ -137,6 +138,7 @@
 
   function renderState(s, error) {
     state.live = s;
+    renderSavedPositions(error ? null : s.saved_positions);
     if (error) {
       ui.conn.className = 'badge red';
       ui.conn.textContent = 'ROBOT OFFLINE';
@@ -235,10 +237,31 @@
   }
 
   // ---------------------------------------------------------------- generated skill forms
+  function renderSavedPositions(names) {
+    state.savedPositions = Array.isArray(names) ? [...new Set(['home', ...names])] : null;
+    const select = byId('sk-go_to_position-name');
+    if (!select) return;
+    const selected = select.value;
+    const options = state.savedPositions;
+    const signature = JSON.stringify(options);
+    const html = `<option value="">${options ? 'Select a saved position…' : 'Saved positions unavailable'}</option>`
+      + (options || []).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    if (select.dataset.positions !== signature) {
+      select.innerHTML = html;
+      select.value = options?.includes(selected) ? selected : '';
+      select.dataset.positions = signature;
+    }
+    select.disabled = !options;
+  }
+
   function fieldHtml(skill, key, schema, required) {
     const id = `sk-${skill}-${key}`;
     const label = `${esc(key)}${required ? ' *' : ''}`;
     const range = [schema.minimum, schema.maximum].filter((v) => v !== undefined).join('…');
+    if (skill === 'go_to_position' && key === 'name') {
+      return `<label class="wide">${label}<select class="field" id="${id}" data-key="${key}" data-type="string" required disabled>`
+        + '<option value="">Loading saved positions…</option></select></label>';
+    }
     if (schema.type === 'array') {
       const n = schema.maxItems || 6;
       const inputs = Array.from({ length: n }, (_, i) =>
@@ -318,6 +341,7 @@
       const data = await api('/api/skills');
       state.catalogue = new Map(data.skills.map((s) => [s.name, s]));
       ui.skills.innerHTML = data.skills.map(skillCardHtml).join('');
+      renderSavedPositions(state.savedPositions);
       const d = data.defaults || {};
       if (d.speed) { ui.speed.value = d.speed; ui.speedVal.textContent = `${d.speed}%`; }
       if (d.gripper_force) { ui.force.value = d.gripper_force; ui.forceVal.textContent = `${d.gripper_force}%`; }
@@ -346,5 +370,11 @@
   bindSkillForms();
   renderState(null, 'waiting for first update');
   loadSkills();
+  new MutationObserver(() => {
+    if (debugVisible() && !state.polling) {
+      state.polling = true;
+      refreshState().finally(() => { state.polling = false; });
+    }
+  }).observe(byId('page-debug'), { attributes: true, attributeFilter: ['class'] });
   pollLoop();
 })();

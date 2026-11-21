@@ -117,21 +117,33 @@ def perception_specs(scene) -> list[ActionSpec]:
     camera = {"type": "string", "enum": sorted(scene.sources), "description": "env = D455 overview, wrist = gripper view"}
     return [
         ActionSpec("look",
-                   "Take a picture with a camera and detect coloured objects. Returns every object with "
-                   "pixel position, bbox, angle_deg (edge angle in the image, 0–90; only when measurable — absent "
-                   "for small blobs and for blobs cut by the image border, which carry cut_by_edge) and, for the "
-                   "env camera when calibrated, base_xyz_mm: robot coordinates of the point at the blob centre, on the "
-                   "surface the env camera sees there (from depth) — the top, or a side face when the camera looks "
-                   "from the side, so z can be below the object's top. The annotated image is attached when it adds information "
-                   "(first view, unexpected event, ambiguous detection) — image='always' to force it, "
-                   "'never' for data only.",
-                   scene.look, _obj({"camera": camera, "colors": {"type": "array", "items": colors},
+                   "Take a picture with a camera. Returns the image (always attached) and its size; nothing is "
+                   "detected for you. env = the D455 (colour + depth, calibrated to the robot base frame), wrist = "
+                   "the webcam on the gripper (colour only; the fingertip points are marked, fingertips_px). "
+                   "zoom=[x, y, w, h] returns that region of the full image "
+                   "enlarged. depth_at answers for the pixels of the last env picture.",
+                   scene.look, _obj({"camera": camera,
                                      "zoom": {"type": "array", "items": {"type": "integer"}, "minItems": 4,
                                               "maxItems": 4,
-                                              "description": "[x, y, w, h] region of the full image to enlarge"},
-                                     "image": {"type": "string", "enum": ["auto", "always", "never"]}},
+                                              "description": "[x, y, w, h] region of the full image to enlarge"}},
                                     []),
                    read_only=True),
+    ] + ([
+        ActionSpec("depth_at",
+                   "Depth at pixels of the LAST env picture (full-image coordinates, the same frame you saw): per "
+                   "pixel the median valid depth in a (2*window_px+1)^2 window, the 3D point in the camera frame and "
+                   "base_xyz_mm, the point in the robot base frame (on the surface the D455 sees at that pixel). "
+                   "valid_fraction = share of the window with depth; depth_spread_mm = 10–90 % spread of the depth in "
+                   "the window (large at object edges). plane_z (mm): also at_plane_xyz_mm, where the pixel's viewing ray meets the "
+                   "horizontal plane z = plane_z (no depth used). The same picture comes back with the asked "
+                   "pixels marked and numbered in order.",
+                   scene.depth_at,
+                   _obj({"pixels": {"type": "array", "minItems": 1, "maxItems": 50,
+                                    "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}},
+                         "window_px": {"type": "integer", "minimum": 0, "maximum": 10},
+                         "plane_z": {"type": "number"}}, ["pixels"]),
+                   read_only=True),
+    ] if hasattr(scene, "depth_at") else []) + [
         ActionSpec("find_objects",
                    "Detect objects of one colour (largest first). Env camera: base_xyz_mm = robot base frame position "
                    "of the point at the blob centre, on the surface the camera sees there (when calibrated; see look). If nothing is visible it returns last_seen (where it was, "

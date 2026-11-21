@@ -25,10 +25,16 @@ MOTION = {"move_to_pose", "move_to_joints", "move_relative", "jog_joint", "go_to
 @dataclass
 class ChunkPolicy:
     enabled: bool = True
-    max_horizon: int = 4          # 1 … 4
+    max_horizon: int = 4          # 1 … 4 (free: any)
     max_calls: int = 8            # read-only calls included
+    # free (20 Nov, operator): Astra plans as many actions as it wants; no horizon by zone, no verification
+    # boundary. Every action is still validated (target, path, joint/self collision, table) when it runs,
+    # and the rest of the plan is dropped after any error, refusal or unexpected event (ABORTS_CHUNK).
+    free: bool = False
 
     def horizon_for(self, name: str, args: dict, tip_z: float | None, zone_top: float | None) -> int:
+        if self.free:
+            return self.max_horizon
         if name in BOUNDARY:
             return 1
         if zone_top is None or tip_z is None:
@@ -56,7 +62,7 @@ class ChunkPolicy:
             if name not in MOTION or _gripper_noop(name, args, grip):
                 run.append(call)
                 continue
-            if crossed_boundary:
+            if crossed_boundary and not self.free:
                 return run, list(calls[i:]), "verification boundary: look at the result before moving again"
             limit = min(limit, self.horizon_for(name, args, z, zone_top))
             if moves + 1 > limit:

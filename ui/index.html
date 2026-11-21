@@ -109,7 +109,7 @@
         <h4>Safety</h4>
         <label class="sk-arm"><input type="checkbox" class="switch" id="skArm">
           <span><strong>Workspace clear</strong><br><small>Required for every motion button</small></span></label>
-        <div class="sk-row" style="margin-top:8px">
+        <div class="sk-row sk-actions" style="margin-top:8px">
           <button class="btn sm sk-motion" data-system="power_on" title="Mode 3 (arm power off) → power the arm, wait ~10 s">Power on</button>
           <button class="btn sm sk-motion" data-system="enable" title="Release brakes (needs Workspace clear)">Enable</button>
           <button class="btn sm" data-system="clear">Clear alarm</button>
@@ -146,7 +146,7 @@
           <input class="field sk-mini" id="skStepDeg" type="number" min="0.1" max="20" step="0.5" value="5"><span class="sk-unit">deg</span>
         </div>
         <div class="sk-jog" id="skJointJog"></div>
-        <div class="sk-row" style="margin-top:10px">
+        <div class="sk-row sk-actions" style="margin-top:10px">
           <button class="btn sm sk-motion" data-skill="go_to_position" data-args='{"name":"home"}'>Go home</button>
           <button class="btn sm" id="skSaveBtn">Save position…</button>
         </div>

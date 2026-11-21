@@ -17,7 +17,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from common.paths import MEMORY_DIR
+from common.paths import MEMORY_DIR, REPO_ROOT
 
 SKILLS_FILE = MEMORY_DIR / "skills.json"
 
@@ -42,6 +42,8 @@ class Skill:
     recovery: list[dict] = field(default_factory=list)            # safe steps after a definite failure
     calibration: str = ""   # coordinate definition the numbers use (memory.knowledge.CALIBRATION); "" = current
     validation_status: str = "candidate"   # candidate (needs a supervised run) | validated | deprecated
+    validated_dependency_hash: str | None = None
+    ledger_evaluation_ids: list[str] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)            # {t, ok, supervised, failure, episode}
 
 
@@ -62,13 +64,23 @@ class SkillLibrary:
         return next((s for s in self.all() if s.name == name), None)
 
     def record_outcome(self, name: str, success: bool) -> None:
+        """Execution results are claims; only the operator's ledger review updates trust."""
+        self.add_evidence(name, success, False)
+
+    def dependency_hash(self, name: str) -> str | None:
+        """Hash bytes without executing dependencies; called by the harness/operator."""
+        import hashlib
+        from judge.spec import digest, verifier_hash
         skill = self.get(name)
-        if skill:
-            if success:
-                skill.successes += 1
-            else:
-                skill.failures += 1
-            self.save(skill)
+        if skill is None:
+            return None
+        procedure = {k: getattr(skill, k) for k in ("name", "steps", "params", "preconditions", "success_conditions",
+                                                   "recovery", "failure_conditions", "calibration")}
+        roots = (REPO_ROOT / "src/actions", REPO_ROOT / "src/agent/astra_skills", REPO_ROOT / "config",
+                 REPO_ROOT / "data/calibration", REPO_ROOT / "src/judge/config")
+        files = [(str(p.relative_to(REPO_ROOT)), hashlib.sha256(p.read_bytes()).hexdigest())
+                 for root in roots for p in sorted(root.rglob("*")) if p.is_file() and "__pycache__" not in p.parts]
+        return digest({"procedure": procedure, "dependencies": files, "verifier": verifier_hash()})
 
     def ensure_seeds(self) -> None:
         """Add built-in starter skills; upgrade stored copies of an older seed version
@@ -91,11 +103,14 @@ class SkillLibrary:
                                              "successes": old.successes, "failures": old.failures,
                                              "validation_status": old.validation_status,
                                              "recovery": old.recovery, "preconditions": old.preconditions,
-                                             "success_conditions": old.success_conditions}])[-keep:]
+                                             "success_conditions": old.success_conditions,
+                                             "validated_dependency_hash": old.validated_dependency_hash}])[-keep:]
             skill.successes = skill.failures = 0
             skill.evidence = []
         # A new or revised procedure is never trusted until it is run under supervision.
         skill.validation_status = "candidate"
+        skill.validated_dependency_hash = None
+        skill.ledger_evaluation_ids = []
         self.save(skill)
         return skill
 
@@ -106,7 +121,7 @@ class SkillLibrary:
         skill = self.get(name)
         if skill is None:
             return
-        rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "ok": bool(ok), "supervised": bool(supervised),
+        rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "claim": {"ok": bool(ok)}, "supervised": bool(supervised),
                "failure": failure, "episode": episode}
         if step:
             rec["step"] = step
@@ -122,7 +137,7 @@ class SkillLibrary:
         if skill is None or after <= 0 or skill.successes:
             return None
         last = skill.evidence[-after:]
-        if len(last) < after or any(e.get("ok") for e in last):
+        if len(last) < after or any((e.get("claim") or {}).get("ok") for e in last):
             return None
         return {"skill": name, "version": skill.version, "consecutive_failures": after,
                 "stats": self.failure_stats(name)}
@@ -134,7 +149,7 @@ class SkillLibrary:
             return {}
         by_step: dict = {}
         for e in skill.evidence:
-            if e.get("ok"):
+            if (e.get("claim") or {}).get("ok"):
                 continue
             key = f"{e.get('step') or '?'}:{e.get('failure') or '?'}"
             by_step[key] = by_step.get(key, 0) + 1
@@ -146,33 +161,31 @@ class SkillLibrary:
                 "failed_at": dict(sorted(by_step.items(), key=lambda kv: -kv[1])),
                 "measured": {k: v[-8:] for k, v in nums.items()}}
 
-    def promote(self, name: str, min_supervised_successes: int = 2) -> dict:
-        """Operator action only (never called by Astra): candidate -> validated, when the
-        CURRENT version has enough supervised, camera-verified successes."""
+    def promote(self, name: str, min_supervised_successes: int = 2, *, evaluation_ids=None, ledger=None) -> dict:
+        """Operator-only promotion citing independent finalized ledger evaluations."""
+        from judge.ledger import JudgeLedger
         skill = self.get(name)
         if skill is None:
             return {"promoted": False, "reason": f"no skill {name!r}"}
-        ok = sum(1 for e in skill.evidence if e.get("ok") and e.get("supervised"))
-        if ok < min_supervised_successes:
-            return {"promoted": False, "reason": f"{name} v{skill.version}: {ok} supervised successes, "
-                                                 f"need {min_supervised_successes}"}
+        cited = set(evaluation_ids or ())
+        current = self.dependency_hash(name)
+        rows = [r for r in (ledger or JudgeLedger()).rows() if r["evaluation_id"] in cited
+                and r["event"] == "episode_end" and r["success_credit"] and not r["provisional"]
+                and r["skill_dependency_hash"] == current]
+        episodes = {r["episode_id"] for r in rows}
+        if len(episodes) < max(1, min_supervised_successes):
+            return {"promoted": False, "reason": "insufficient matching judge ledger citations"}
         skill.validation_status = "validated"
+        skill.validated_dependency_hash = current
+        skill.ledger_evaluation_ids = sorted({r["evaluation_id"] for r in rows})
+        skill.successes = len(episodes)
         self.save(skill)
-        return {"promoted": True, "name": name, "version": skill.version, "supervised_successes": ok}
+        return {"promoted": True, "name": name, "version": skill.version,
+                "ledger_evaluation_ids": skill.ledger_evaluation_ids}
 
-    def auto_promote(self, name: str, after: int) -> dict | None:
-        """Autonomous mode: a candidate whose CURRENT version succeeded (camera-verified
-        success conditions) in its last ``after`` runs, with no failure among them, becomes
-        validated. Counts restart with every new version, so a revision must earn it again."""
-        skill = self.get(name)
-        if skill is None or after <= 0 or skill.validation_status != "candidate":
-            return None
-        last = skill.evidence[-after:]
-        if len(last) < after or not all(e.get("ok") for e in last):
-            return None
-        skill.validation_status = "validated"
-        self.save(skill)
-        return {"promoted": True, "name": name, "version": skill.version, "after_successes": after}
+    def auto_promote(self, name: str, after: int) -> None:
+        """Disabled: writable skill checks cannot confer authority."""
+        return None
 
     def retire(self, name: str, reason: str = "") -> dict:
         """Mark a skill deprecated (kept in the file with its history; run_skill refuses it)."""
@@ -197,9 +210,9 @@ class SkillLibrary:
                          tags=skill.tags, preconditions=old.get("preconditions", []),
                          success_conditions=old.get("success_conditions", []),
                          recovery=old.get("recovery", []), failure_conditions=skill.failure_conditions)
-        status = old.get("validation_status", "candidate")
+        status = "candidate"       # rollback never restores trust in changed dependencies
         self.revise(restored)
-        restored.validation_status = status          # a rollback restores the trust it had
+        restored.validation_status = status
         self.save(restored)
         return {"rolled_back": True, "name": name, "from_version": version, "now_version": restored.version,
                 "validation_status": status}

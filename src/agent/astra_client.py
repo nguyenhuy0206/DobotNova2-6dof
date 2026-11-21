@@ -45,13 +45,23 @@ class AstraClient:
             kwargs["instructions"] = instructions
         if self.config.truncation:
             kwargs["truncation"] = self.config.truncation
+        if getattr(self.config, "reasoning_summary", "") and not getattr(self, "_no_reasoning_summary", False):
+            kwargs["reasoning"] = {"summary": self.config.reasoning_summary}
         if instructions:
             # same instructions + tools every turn: one cache key so they are billed as cached input
             import hashlib
             kwargs["prompt_cache_key"] = "astra-" + hashlib.sha1(instructions.encode()).hexdigest()[:16]
-        from openai import RateLimitError
+        from openai import BadRequestError, RateLimitError
         try:
-            return self.client.responses.create(**kwargs)
+            try:
+                return self.client.responses.create(**kwargs)
+            except BadRequestError as exc:
+                if "reasoning" not in kwargs or "reasoning" not in str(exc).lower():
+                    raise
+                # the endpoint does not take reasoning summaries: never ask again in this session
+                self._no_reasoning_summary = True
+                kwargs.pop("reasoning")
+                return self.client.responses.create(**kwargs)
         except RateLimitError as exc:
             body = str(getattr(exc, "body", "") or exc)
             if "insufficient_quota" in body or "credit_balance_exhausted" in body:

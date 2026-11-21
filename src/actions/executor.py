@@ -76,6 +76,7 @@ class ActionExecutor:
             self.specs = {k: s for k, s in self.specs.items() if k in allowed}
         self.mode = mode
         self.confirm = confirm
+        self.lifecycle = None       # private harness hook; never an Astra tool
 
     def list(self) -> list[ActionSpec]:
         return list(self.specs.values())
@@ -93,9 +94,16 @@ class ActionExecutor:
                         "result": f"DRY RUN: {name}({clean}) validated, not sent."}
             if self.mode == "confirm" and spec.moves_robot and not spec.delegates and not self.confirm(name, clean):
                 return {"ok": False, "action": name, "executed": False, "error": "Operator rejected the action."}
-            result = spec.handler(**clean)
+            watched = self.lifecycle is not None and ((spec.moves_robot and not spec.delegates) or name == "look")
+            feedback = self.lifecycle.before(name, clean) if watched else {}
+            try:
+                result = spec.handler(**clean)
+            finally:
+                if watched:
+                    feedback = self.lifecycle.after(name, clean) or feedback
             log.info("%s %s -> %s", name, clean, _short(result))
-            return {"ok": True, "action": name, "executed": True, "result": result}
+            return {"ok": True, "action": name, "executed": True, "result": result,
+                    **({"grasp_measurements": feedback} if feedback else {})}
         except (RobotError, OSError, ValueError, TypeError) as exc:
             log.warning("%s %s failed: %s", name, args, exc)
             return {"ok": False, "action": name, "executed": False, "error": str(exc), "error_type": type(exc).__name__}

@@ -60,7 +60,7 @@ def fill(value, params: dict):
 # change what is safe, what is remembered, or other skills)
 SKILL_TOOLS = {"get_state", "move_to_pose", "move_to_joints", "move_relative", "jog_joint", "go_to_position",
                "open_gripper", "close_gripper", "set_gripper", "stop", "look", "find_objects",
-               "check_robot_in_view"}
+               "check_robot_in_view", "depth_at"}     # depth_at: 20 Nov — the only perception look still offers
 
 
 class SkillRunner:
@@ -73,8 +73,8 @@ class SkillRunner:
     require_validation: a skill whose validation_status is not "validated" only runs
     live after the operator approves this run (``supervisor(name, params) -> bool``);
     the outcome is stored as supervised evidence. Promotion is an operator command.
-    Autonomous mode (require_validation False): candidates run without asking, and
-    auto_promote_after > 0 promotes one after that many verified successes in a row.
+    Autonomous mode runs candidates without asking. Execution checks remain operational
+    diagnostics; promotion requires an operator citing the independent judge ledger.
     """
 
     def __init__(self, library: SkillLibrary, constants: dict | None = None, local=None,
@@ -86,7 +86,8 @@ class SkillRunner:
         self.require_validation = require_validation
         self.supervisor = supervisor
         self.episode: str | None = None    # set by the harness, stored with evidence
-        self.auto_promote_after = 0        # autonomous mode: promote after N verified successes in a row
+        self.auto_promote_after = 0        # compatibility only; automatic promotion is disabled
+        self.current_dependency_hash = None
         self.quarantine_after = 0          # refuse a version that failed this many runs in a row (0 = off)
 
     def list(self, name: str | None = None) -> list[dict]:
@@ -147,7 +148,9 @@ class SkillRunner:
                 "before running it again: save_skill a new version that changes the step that keeps failing (or its "
                 "defaults), or rollback_skill to a version that worked. Repeating it unchanged is not allowed.")
         supervised = False
-        if live and self.require_validation and skill.validation_status != "validated":
+        trusted = (skill.validation_status == "validated" and skill.validated_dependency_hash is not None
+                   and skill.validated_dependency_hash == self.current_dependency_hash)
+        if live and self.require_validation and not trusted:
             if self.supervisor is None or not self.supervisor(name, params or {}):
                 raise ValidationError(f"skill '{name}' v{skill.version} is a {skill.validation_status}: it needs "
                                       "operator approval to run (not given). Use primitives, or ask for a supervised run.")
@@ -190,15 +193,10 @@ class SkillRunner:
                         break
                 result["recovery"] = rec
         if live:
-            self.library.record_outcome(name, result["ok"])
             fs = result.get("failed_step") or {}
             self.library.add_evidence(name, result["ok"], supervised, result.get("failure"), self.episode,
                                       step=f"{fs.get('kind')}:{fs.get('name')}" if fs else None,
                                       measured=_measured(trace))
-            if result["ok"] and not self.require_validation and self.auto_promote_after:
-                promoted = self.library.auto_promote(name, self.auto_promote_after)
-                if promoted:
-                    result["promoted"] = promoted
         if self.executor.mode == "dry_run":
             result["note"] = "dry_run: motions validated only, checks not evaluated"
         return result
@@ -241,9 +239,7 @@ class SkillRunner:
         if self.require_validation:
             note = "new versions are candidates: they run only under operator supervision until promoted"
         else:
-            note = ("saved as a candidate: you may run it now; it becomes validated after "
-                    f"{self.auto_promote_after or 'enough'} verified successes in a row. If it does worse than the "
-                    "previous version, rollback_skill to that version.")
+            note = "saved as a candidate: you may run it now; validation requires operator ledger review"
         return {"saved": name, "version": saved.version, "steps": len(steps),
                 "validation_status": saved.validation_status, "note": note}
 

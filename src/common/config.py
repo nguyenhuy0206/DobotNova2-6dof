@@ -174,6 +174,7 @@ class AgentConfig:
     max_output_tokens: int = 1000
     max_steps: int = 20
     max_speed: int = 10        # % cap on every robot motion the agent commands
+    fixed_speed: int | None = None   # every agent motion at exactly this % (its own speed argument ignored)
     # dry_run: tools are validated but never sent to the robot
     # confirm: each motion tool asks a human on stdin before running
     # live:    tools run directly (still subject to validation + safety checks)
@@ -181,6 +182,7 @@ class AgentConfig:
     allowed_tools: list[str] = field(default_factory=list)  # empty = all registered
     system_prompt: str = ""
     truncation: str = ""       # "auto": let the API drop old turns in long runs (explore mode)
+    reasoning_summary: str = ""   # "auto" / "concise" / "detailed": ask for a summary of the model's reasoning (logged)
 
 
 def _build(cls, data: dict):

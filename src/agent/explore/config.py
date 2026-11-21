@@ -39,6 +39,7 @@ class ExploreConfig:
     gripper: ExploreGripper = field(default_factory=ExploreGripper)
     view_guard: ViewGuardConfig = field(default_factory=ViewGuardConfig)
     collision_level: int = 3
+    speed_factor: int = 0          # controller global SpeedFactor % set at start (0 = leave)
     skills_file: str = "data/memory/skills_explore.json"
     allowed_tools: list[str] = field(default_factory=list)
     harness: dict = field(default_factory=lambda: {"variant": "V3"})   # see agent.harness.HarnessOptions

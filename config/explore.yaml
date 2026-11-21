@@ -23,17 +23,19 @@ qwen:
   # no token budget and no call limit for qwen (local, free): it runs until it reports or Ctrl+C
 
 execution_mode: live      # live | confirm (ask y/N on every motion) | dry_run
-max_steps: 60             # model calls per episode (a skill call runs many steps locally)
+max_steps: 150            # model calls per episode (a skill call runs many steps locally); 20 Nov: 60 -> 150
 max_output_tokens: 2000
 
 harness:                  # token-efficient harness (agent/harness.py) — same safety in every variant
   variant: V3             # V0 baseline · V1 bounded context · V2 action chunks · V3 both
   recent_turns: 4         # last model turns kept verbatim
   summary_max_chars: 4000 # rolling episode digest (≈1000 tokens, deterministic, no LLM)
-  max_horizon: 4          # most robot actions per proposal in free space (1 in contact, ≤2 aligning)
-  env_image_detail: low   # env images are only for overview; detections come as data
+  max_horizon: 4          # most robot actions per proposal in free space (1 in contact, ≤2 aligning) — unused with free_chunks
+  free_chunks: true       # 20 Nov: Astra plans freely (no horizon, no verification boundary); each action still
+                          # validated, the rest of a turn's calls dropped after any error / refusal / event
+  env_image_detail: high  # 20 Nov: Astra finds the objects in the env image itself
   wrist_image_detail: high
-  max_episode_tokens: 400000   # stop the episode (not the robot mid-move) when reached; 0 = off
+  max_episode_tokens: 1000000  # stop the episode (not the robot mid-move) when reached; 0 = off (20 Nov: 400k -> 1M, images every look)
   max_repeats: 3          # same action (tool + args) or same hypothesis this many times in a row ends the episode; 0 = off
   post_lift_image: true  # once per grasp, a wrist image after lifting while holding: log + review only, not shown live
 
@@ -42,9 +44,9 @@ skills:
   # The hard limits (speed, table floor, approach zone, contact stop, view guard) still apply to every move.
   # true = the old supervised mode: every candidate run needs the operator's y.
   require_validation: false
-  auto_promote_after: 2         # candidate -> validated after 2 camera-verified successes in a row (0 = never)
+  auto_promote_after: 2         # IGNORED since 20 Nov: promotion only by the operator citing judge ledger entries
   min_supervised_successes: 2   # --promote NAME (operator) needs this many supervised successes
-  builtin_pick_place: true      # pick_block_wrist / place_block_on_table (from episode 181222)
+  builtin_pick_place: false     # 20 Nov: off — the built-in skills rest on the colour detector (operator: no baseline)
 diagnosis:
   gate_after_repeats: 2         # refuse run_skill/save_skill only when the SAME failure repeats 2× undiagnosed (0 = never)
 reflect_max_steps: 6            # one reflection pass after each episode, ≤ 6 model calls
@@ -57,11 +59,12 @@ gripper:
   speed: 20               # fixed finger speed % for open/close (speed 10 timed out 3 of 3, 17 Nov)
 
 view_guard:               # env camera (D455 colour) must always see the robot
-  enabled: true
+  enabled: false          # 20 Nov: off (operator: only collisions matter; a move out of the D455 view was undone)
   marker_color: red       # coloured tape wrapped around the gripper body (not a task colour!)
   min_area_px: 40
 
 collision_level: 3        # controller collision detection, 1 (least) … 5 (most sensitive); 0 = leave unchanged
+speed_factor: 100         # controller global SpeedFactor at start (it multiplies every command's %); 0 = leave unchanged
 
 skills_file: data/memory/skills_explore.json   # Astra's own skills (no built-in seeds)
 
@@ -77,9 +80,8 @@ allowed_tools:
   - open_gripper
   - close_gripper
   # seeing
-  - look
-  - find_objects
-  - check_robot_in_view
+  - look                    # 20 Nov: the picture only; Astra finds objects itself (no colour detector)
+  - depth_at                # D455 depth / base coordinates at pixels Astra chooses
   # Camera calibration is operator infrastructure (18 Nov), not an Astra tool: it does not help
   # self-improvement. Operator: scripts/calibrate.sh.
   # learning

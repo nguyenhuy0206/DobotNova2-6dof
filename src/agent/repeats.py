@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-OBSERVE_ONLY = {"get_state", "look", "find_objects", "list_skills", "list_routines", "read_routine",
+OBSERVE_ONLY = {"get_state", "look", "depth_at", "find_objects", "list_skills", "list_routines", "read_routine",
                 "list_concepts", "query_observations", "read_history", "check_robot_in_view"}
 
 

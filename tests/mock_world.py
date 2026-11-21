@@ -89,29 +89,29 @@ class FakeScene:
 
 def pick_place_plan(blocks=("green", "blue", "yellow")) -> list[tuple[str, dict]]:
     """The 181222 primitive sequence (per block), as the baseline Astra issued it."""
-    plan = [("get_state", {}), ("look", {"camera": "env", "colors": list(blocks)})]
+    plan = [("get_state", {}), ("look", {"camera": "env"})]
     for i, b in enumerate(blocks):
         x, y = {"blue": (-345, -480), "green": (-328, -440), "yellow": (-300, -360)}[b]
         plan += [("open_gripper", {}),
                  ("move_to_pose", {"x": x, "y": y, "z": 164, "rx": 180, "ry": 0, "rz": 70.9, "speed": 3}),
-                 ("look", {"camera": "wrist", "colors": [b]})]
+                 ("look", {"camera": "wrist"})]
         for dz in (-25, -25, -15):
-            plan += [("move_relative", {"dz": dz, "speed": 2}), ("look", {"camera": "wrist", "colors": [b]})]
+            plan += [("move_relative", {"dz": dz, "speed": 2}), ("look", {"camera": "wrist"})]
         for dx, dy in ((0, 10), (10, 0), (0, -15), (-15, 0)):
             plan += [("move_relative", {"dx": dx, "dy": dy, "frame": "tool", "speed": 1}),
-                     ("look", {"camera": "wrist", "colors": [b]})]
+                     ("look", {"camera": "wrist"})]
         for dz in (-19, -19):
-            plan += [("move_relative", {"dz": dz, "speed": 1}), ("look", {"camera": "wrist", "colors": [b]})]
+            plan += [("move_relative", {"dz": dz, "speed": 1}), ("look", {"camera": "wrist"})]
         plan += [("close_gripper", {}), ("move_relative", {"dz": 15, "speed": 2}),
-                 ("look", {"camera": "env", "colors": [b]})]
+                 ("look", {"camera": "env"})]
         for _ in range(3):
-            plan += [("move_relative", {"dz": 23, "speed": 2}), ("look", {"camera": "wrist", "colors": [b]})]
+            plan += [("move_relative", {"dz": 23, "speed": 2}), ("look", {"camera": "wrist"})]
         plan += [("move_to_pose", {"x": -230, "y": -440 + 70 * i, "z": 165, "rx": 180, "ry": 0, "rz": 70.9,
                                    "linear": True, "speed": 3})]
         for _ in range(4):
-            plan += [("move_relative", {"dz": -25, "speed": 2}), ("look", {"camera": "wrist", "colors": [b]})]
+            plan += [("move_relative", {"dz": -25, "speed": 2}), ("look", {"camera": "wrist"})]
         plan += [("open_gripper", {}), ("move_relative", {"dz": 25, "speed": 2}),
-                 ("look", {"camera": "env", "colors": list(blocks)})]
+                 ("look", {"camera": "env"})]
         plan += [("move_relative", {"dz": 85, "speed": 3})]
     return plan
 
@@ -177,14 +177,14 @@ class ScriptedAstra:
 def skill_plan(blocks=("green", "blue", "yellow")) -> list[tuple[str, dict]]:
     """The same task with the distilled skills: one call per pick and per place."""
     pos = {"blue": (-345, -480, 69), "green": (-328, -440, 69), "yellow": (-300, -360, 70)}
-    plan = [("get_state", {}), ("look", {"camera": "env", "colors": list(blocks)})]
+    plan = [("get_state", {}), ("look", {"camera": "env"})]
     for i, b in enumerate(blocks):
         x, y, z = pos[b]
         plan += [("run_skill", {"name": "pick_block_wrist", "params": {"color": b, "x": x + 6, "y": y - 4,
                                                                          "z_top": z, "rz": 70.9}}),
                  ("run_skill", {"name": "place_block_on_table", "params": {"color": b, "x": -230,
                                                                              "y": -440 + 70 * i, "rz": 70.9}})]
-    plan += [("look", {"camera": "env", "colors": list(blocks)})]
+    plan += [("look", {"camera": "env"})]
     return plan
 
 

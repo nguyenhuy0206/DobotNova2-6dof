@@ -141,7 +141,8 @@ class Prior:
 
 def prior_from_session(session: Path, cfg: CalibrationConfig) -> Prior:
     data = json.loads((session / "views.json").read_text(encoding="utf-8"))
-    views = data["wrist"]["views"]
+    # same filter as solve(): corners on one row/column give a NaN pose (20 Nov, the prior from 155413 failed)
+    views = [v for v in data["wrist"]["views"] if spans_board(v["detection"]["ids"], cfg.board)]
     dets = [Detection.from_dict(v["detection"]) for v in views]
     K, dist, _ = calibrate_intrinsics(dets, cfg.board)
     he = hand_eye([pose_to_matrix(v["flange_pose"]) for v in views], dets, cfg.board, K, dist)

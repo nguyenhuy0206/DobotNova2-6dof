@@ -36,9 +36,9 @@ def test_skill_revisions_keep_history(tmp_path):
     assert v2.version == 2 and v2.successes == v2.failures == 0
     old = v2.history[0]
     assert {k: old[k] for k in ("version", "steps", "params", "successes", "failures")} == \
-        {"version": 1, "steps": [{"tool": "close_gripper"}], "params": {}, "successes": 1, "failures": 1}
+        {"version": 1, "steps": [{"tool": "close_gripper"}], "params": {}, "successes": 0, "failures": 0}
     assert v2.validation_status == "candidate"
-    assert SkillLibrary(tmp_path / "s.json").get("grasp").history[0]["failures"] == 1
+    assert SkillLibrary(tmp_path / "s.json").get("grasp").history[0]["failures"] == 0
 
 
 def test_episode_review_records_outcome_and_updates_skill(prims, sim, tmp_path):
@@ -86,7 +86,7 @@ def test_episode_review_records_outcome_and_updates_skill(prims, sim, tmp_path):
                                                         "expect": {"ok": True}}, "n")],
            output_text=""),
         NS(id="r2", output=[], output_text="reviewed")])
-    AgentHarness(reviewer, review_ex, AgentConfig(), EpisodeStore(tmp_path / "rev"), lib, notes=know).run(log)
+    AgentHarness(reviewer, review_ex, AgentConfig(), EpisodeStore(tmp_path / "rev"), lib, notes=know, judge=False).run(log)
     assert recorder.last["success"] is False and history(tmp_path / "ep" / "index.jsonl")[0]["episode"] == ep
     assert episodes.load(ep)[-1]["event"] == "outcome"
     hyp = know.list("C1")["hypotheses"][0]

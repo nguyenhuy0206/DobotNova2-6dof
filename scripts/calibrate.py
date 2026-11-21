@@ -29,6 +29,8 @@ from common.log import setup_logging
 
 # --------------------------------------------------------------------------------------------- cameras
 
+CALIBRATION_SPEED = 10      # % for the calibration orbit, whatever the agent's speed settings are
+
 def _show(rep: dict) -> None:
     from calibration.cameras import public
     print("\n" + json.dumps(public({k: v for k, v in rep.items() if k not in ("problems", "warnings")}),
@@ -79,6 +81,9 @@ def cameras(args) -> None:
     from agent.explore import build_explore
     s = build_explore(mode="live", client=object())          # no model needed
     p = s.kit.primitives
+    # calibration moves the arm around the board by itself: always 10 %, never Astra's fixed/capped speed
+    # (20 Nov: agent.yaml fixed_speed 50 would have made the orbit run at 50 %)
+    p.fixed_speed, p.speed_cap = None, CALIBRATION_SPEED
     problems = s.preflight()
     if problems:
         print("Not ready:\n" + "\n".join(f"  ✗ {m}" for m in problems))
@@ -92,7 +97,7 @@ def cameras(args) -> None:
     if not args.yes:
         input("Robot will move by itself (10 %). Hand on the E-stop. Enter = start, Ctrl+C = cancel ")
     try:
-        rep = cc.run(p, s.kit.scene, cfg, pcfg.calibration_path, speed=p.speed_cap or 10, max_views=args.views,
+        rep = cc.run(p, s.kit.scene, cfg, pcfg.calibration_path, speed=CALIBRATION_SPEED, max_views=args.views,
                      apply=not args.dry, prior=prior)
     except KeyboardInterrupt:
         p.stop()

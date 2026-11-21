@@ -110,12 +110,23 @@ class RealSenseCamera:
     FALLBACK_PROFILES = [(1280, 720, 15), (1280, 720, 6), (848, 480, 30), (848, 480, 15), (640, 480, 15),
                          (640, 480, 6), (424, 240, 15)]
 
-    def __init__(self, width: int = 848, height: int = 480, fps: int = 30, serial: str | None = None):
+    def __init__(self, width: int = 848, height: int = 480, fps: int = 30, serial: str | None = None,
+                 preset: str | None = None):
+        """preset: a D4xx visual preset name (high_accuracy, default, high_density, …) set on the depth sensor;
+        None leaves the camera's own setting. 20 Nov: on the metal breadboard the default preset read the
+        table 22 ± 12 mm too high; high_accuracy drops the low-confidence depth that causes it."""
         rs = import_pyrealsense2()
         self._rs = rs
         self._stream_id = uuid.uuid4().hex
         errors = []
-        for w, h, f in [(width, height, fps)] + [p for p in self.FALLBACK_PROFILES if p != (width, height, fps)]:
+        profiles = [(width, height, fps)] + [p for p in self.FALLBACK_PROFILES if p != (width, height, fps)]
+        usb = self.usb_type(rs, serial)
+        if usb.startswith("2"):
+            # USB 2: asking for 1280x720 / 848x480@30 knocked the D455 off the bus on 20 Nov (get_xu timed out,
+            # then "No device connected" until replugged) — only the profiles USB 2 carries
+            profiles = [p for p in profiles if p[0] * p[1] * p[2] <= 640 * 480 * 15]
+        self.usb = usb
+        for w, h, f in profiles:
             pipeline, config = rs.pipeline(), rs.config()
             if serial:
                 config.enable_device(serial)
@@ -134,10 +145,36 @@ class RealSenseCamera:
             raise RobotError("RealSense: no colour+depth profile worked — " + " | ".join(errors[-2:]))
         if not hasattr(self, "pipeline"):
             raise RobotError("RealSense: " + errors[-1])
-        self.depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+        sensor = profile.get_device().first_depth_sensor()
+        self.preset_used = None
+        self.preset_error = None
+        if preset:
+            value = getattr(rs.rs400_visual_preset, preset, None)
+            if value is None:
+                raise RobotError(f"RealSense: unknown visual preset {preset!r}")
+            try:
+                sensor.set_option(rs.option.visual_preset, float(int(value)))
+                self.preset_used = preset
+            except RuntimeError as exc:
+                # 20 Nov, USB 2 on macOS: 'get_xu(ctrl=1) failed! Operation timed out' — the preset is not worth
+                # losing the camera: stream with the camera's own setting and say so in the status
+                self.preset_error = str(exc)
+        self.depth_scale = sensor.get_depth_scale()
         self.align = rs.align(rs.stream.color)
         i = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
         self.intrinsics = Intrinsics(i.width, i.height, i.fx, i.fy, i.ppx, i.ppy)
+
+    @staticmethod
+    def usb_type(rs, serial: str | None = None) -> str:
+        """USB type descriptor of the (first / given) RealSense, e.g. '3.2' or '2.1'; '' when unknown."""
+        try:
+            for dev in rs.context().query_devices():
+                if serial and dev.get_info(rs.camera_info.serial_number) != serial:
+                    continue
+                return str(dev.get_info(rs.camera_info.usb_type_descriptor))
+        except Exception:  # noqa: BLE001 — unknown: try every profile as before
+            return ""
+        return ""
 
     def read(self) -> Frame:
         frames = self.pipeline.wait_for_frames()

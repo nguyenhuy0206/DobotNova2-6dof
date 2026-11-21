@@ -45,7 +45,8 @@ SAFE_BUILTINS = {n: __builtins__[n] if isinstance(__builtins__, dict) else getat
     "max", "min", "range", "reversed", "round", "set", "sorted", "str", "sum", "tuple", "zip",
     "Exception", "ValueError", "RuntimeError", "KeyError", "IndexError", "ZeroDivisionError")}
 SKILL_TOOLS = {"get_state", "move_to_pose", "move_to_joints", "move_relative", "jog_joint", "go_to_position",
-               "open_gripper", "close_gripper", "set_gripper", "stop", "look", "find_objects", "check_robot_in_view"}
+               "open_gripper", "close_gripper", "set_gripper", "stop", "look", "find_objects", "check_robot_in_view",
+               "depth_at"}
 
 
 def validate_source(code: str) -> ast.Module:
@@ -121,6 +122,19 @@ class RoutineContext:
     def state(self) -> dict:
         s = self._ls.p.get_state()
         return {k: s.get(k) for k in ("pose", "mode", "error", "moving", "gripper")}
+
+    def depth_at(self, pixels: list, window_px: int = 2, plane_z: float | None = None, look: bool = True) -> list:
+        """D455 depth / base_xyz_mm at pixels (full-image coordinates) — the same as the depth_at tool. look=True
+        takes a fresh env picture first (depth_at answers for the last env look). Returns the points list."""
+        if look:
+            self.execute("look", {"camera": "env"})
+        args = {"pixels": [[float(u), float(v)] for u, v in pixels], "window_px": int(window_px)}
+        if plane_z is not None:
+            args["plane_z"] = float(plane_z)
+        r = self.execute("depth_at", args)
+        if not r.get("ok"):
+            raise ValueError(r.get("error") or "depth_at failed")
+        return r["result"]["points"]
 
     def wrist(self, color: str, min_area: float = 0) -> list:
         """Wrist-camera blobs of a colour: [{label, pixel, bbox[x,y,w,h], area_px, …}] (fresh frame)."""

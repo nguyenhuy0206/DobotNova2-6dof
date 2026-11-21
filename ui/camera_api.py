@@ -43,7 +43,8 @@ class CameraAPI:
         return self._stream(name).latest_jpeg()
 
     def frame_packet(self, name: str) -> tuple:
-        return self._stream(name).latest_packet()
+        """A frame captured after the request (scripts and agents read this: never a stale one)."""
+        return self._stream(name).fresh_packet()
 
     @staticmethod
     def placeholder(message: str) -> bytes:

@@ -13,7 +13,7 @@ speed:                   # percent, used for SpeedJ/AccJ and SpeedFactor
 
 joint_step:              # relative jog, degrees
   min_deg: 0.1
-  max_deg: 20.0
+  max_deg: 90.0          # 20 Nov: 20 -> 45 -> 90 (operator: only collisions are refused)
 
 # Cartesian limits in the robot base frame (mm), checked for the fingertip AND the flange on every
 # move. Surveyed 18 Nov 2026 by hand-guided touches (data/memory/workcell_survey.json):
@@ -27,21 +27,30 @@ workspace:
   z: [0, 600]
   max_radius_mm: 690
   # Working sector, 20 Nov: the operator swept the fingertip over the table with the joints at their
-  # maximum (zone_1..zone_5, r 711–714 mm, z ~80). zone_1 (-35.6, -709.8) is at -92.9°, zone_5 (-695.2, 150.5)
-  # at 167.8°: allowed counter-clockwise from zone_5 through ±180 to zone_1 (the table side). The edges are
-  # the touched points themselves (no margin). The D455 (-65…-77°) and the back of the robot are outside.
-  sector_deg: [167.8, -92.9]
+  # maximum (zone_1..zone_5, 2–5 mm above the table). Edges from the REAL fingertip (contact model, centre
+  # between the fingertips): zone_1 at -87.7°, zone_5 at 173.6°; allowed counter-clockwise from zone_5
+  # through ±180 to zone_1 (the table side). (First version used the saved 'pose' field, which is the TCP of
+  # the controller's active tool, not the fingertip: -92.9° / 167.8°, 5–6° off.)
+  sector_deg: [173.6, -87.7]
   keep_out:             # vertical cylinders the fingertip and flange must not enter
     # D455 after the 20 Nov move: touches front/right/back (camera3d_*; the other side is out of reach),
     # every contact candidate within 95 mm of (309, -587), touched z 492–524 -> +40 mm margin. Top from the
     # tape height instead (camera 600–620 mm above the table, above the highest touch) + 40 mm.
     # (18 Nov position, retired: xy [-5, -632], z [0, 220])
-    - {name: D455, xy: [309.0, -587.0], radius_mm: 135, z: [0, 660]}
+    # 20 Nov ~18:30 the D455 was knocked: the 18:53 calibration moved the lens by (+20.5, -37.5, -24) mm.
+    # Shifted by that and widened 135 -> 160 until the camera is touched again (was xy [309.0, -587.0], r 135).
+    - {name: D455, xy: [329.5, -624.5], radius_mm: 160, z: [0, 660]}
+
+table:                   # keep-out above the taught table (height: data/memory/workcell.json)
+  tip_clearance_mm: 10   # 20 Nov: 10 -> 6 -> 10 (operator: fingertip never below 10 mm above the table)
+  flange_clearance_mm: 60
 
 motion:                  # primitive skills (src/actions/primitives.py)
   joint_limits_deg: [360, 180, 156, 360, 360, 360]
-  max_relative_mm: 100   # largest move_relative translation per call
-  max_relative_deg: 45
+  max_relative_mm: 300   # largest move_relative translation per call (20 Nov: 100 -> 250 -> 150 -> 300; every path is checked)
+  max_relative_deg: 180  # (was 45)
+  approach_max_step_mm: 300  # per move within 120 mm of the table (25 -> 60 -> 300): no step limit in practice; contact stop stays
+  approach_speed: 50     # % within 120 mm of the table (3 -> 10 -> 50, operator: all motion at 50 %): contact stop (stall) stays
   default_speed: 20      # % when a skill call omits speed
   arrive_tol_mm: 1.0
   arrive_tol_deg: 0.5

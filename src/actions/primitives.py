@@ -57,6 +57,10 @@ def _angle_diff(a: float, b: float) -> float:
     return abs((a - b + 180.0) % 360.0 - 180.0)
 
 
+PAUSED = ("robot PAUSED (Pause()): it stays where it stopped until the operator clears and resumes it; "
+          "no further motion in this episode")
+
+
 class PrimitiveSkills:
     def __init__(self, actions: RobotActions, gripper_factory: Callable[[], object] | None = None):
         self.a = actions
@@ -84,7 +88,11 @@ class PrimitiveSkills:
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
+    fixed_speed: int | None = None    # agent.yaml fixed_speed: every motion at this %, whatever was asked
+
     def _speed(self, speed: int | None) -> int:
+        if self.fixed_speed:
+            return v.check_speed(int(self.fixed_speed), self.cfg.speed)
         value = self.m.default_speed if speed is None else int(speed)
         if self.speed_cap is not None and value > self.speed_cap:
             log.info("speed %d%% capped to %d%%", value, self.speed_cap)
@@ -301,39 +309,8 @@ class PrimitiveSkills:
         if inside > self.m.approach_max_step_mm + 0.5:
             raise ValidationError(
                 f"approach zone (fingertip below Z={top:.0f}): at most {self.m.approach_max_step_mm:g} mm per "
-                f"move there, this one is {inside:.0f} mm. Stop at Z≈{top:.0f}, then go down/sideways in "
-                "small steps and look with the wrist camera in between.")
+                f"move there, this one is {inside:.0f} mm.")
         return min(speed, self.m.approach_speed), True
-
-    def _recover_from_alarm(self) -> bool:
-        """ClearError, re-enable if the controller dropped to disabled, and wait until it is
-        ready (mode 5, no alarm, enabled). False = it did not come back: stay stopped."""
-        deadline = time.monotonic() + self.m.recovery_timeout_s
-        enabled_once = False
-        try:
-            self.robot.clear_error()
-            while time.monotonic() < deadline:
-                time.sleep(max(self.m.poll_s, 0.2))
-                fb = self.robot.feedback()
-                if not fb["error"] and fb.get("mode") == 5 and fb.get("enabled", 1):
-                    return True
-                if not fb["error"] and not enabled_once and (fb.get("mode") == 4 or not fb.get("enabled", 1)):
-                    self.robot.enable()
-                    enabled_once = True
-                elif fb["error"]:
-                    self.robot.clear_error()
-        except (RobotError, OSError):
-            return False
-        return False
-
-    def _back_off(self) -> list[float]:
-        """After a contact: straight up by contact_backoff_mm (pure lift, always allowed)."""
-        fb = self.robot.feedback()
-        flange = self.flange_from_controller(fb["pose"])
-        up = [flange[0], flange[1], flange[2] + self.m.contact_backoff_mm, *flange[3:]]
-        self.robot.movl(up, self.m.approach_speed)
-        self._wait(self._pose_reached(up), "back off")
-        return self.tip_from_flange(flange)
 
     # -- env camera must keep seeing the robot ------------------------------------
     def _after_motion(self, result: dict, undo: Callable[[], None]) -> dict:
@@ -377,22 +354,21 @@ class PrimitiveSkills:
         stop, back off upward and raise ContactError."""
         start = time.monotonic()
         last_p, last_t, moved = None, start, False
+        prog_p, prog_t = None, start           # progress watch for the timeout (any move, not only contact)
         while True:
             now = time.monotonic()
             elapsed = now - start
             fb = self.robot.feedback()
             if fb["error"]:
+                # 20 Nov (operator): on a collision only Pause() — no automatic ClearError / back-off. A move sent
+                # after Pause() stays queued behind it (episode 185633: the back-off waited 30 s and never ran).
                 self.robot.stop()
-                if contact and self.m.collision_recovery:
-                    tip = self._summary(fb)["pose"]
-                    if self._recover_from_alarm():
-                        self._back_off()
-                        raise ContactError(
-                            f"{label}: CONTACT at fingertip Z={tip[2]:.1f} (X={tip[0]:.1f}, Y={tip[1]:.1f}) — the "
-                            "controller's collision detection stopped the arm (alarm cleared, robot enabled again) "
-                            f"and it moved up {self.m.contact_backoff_mm:g} mm. That Z is where something blocked "
-                            "the gripper.")
-                raise MotionStopped(f"{label}: robot alarm during motion — stopped.")
+                tip = self._summary(fb)["pose"]
+                if contact:
+                    raise ContactError(
+                        f"{label}: CONTACT at fingertip Z={tip[2]:.1f} (X={tip[0]:.1f}, Y={tip[1]:.1f}) — the "
+                        f"controller's collision detection stopped the arm; {PAUSED}")
+                raise MotionStopped(f"{label}: robot alarm during motion — {PAUSED}")
             idle = fb["running"] == 0
             if idle and (reached(fb) if reached else elapsed >= self.m.start_grace_s):
                 return self._summary(fb)
@@ -404,14 +380,18 @@ class PrimitiveSkills:
                 elif (moved or elapsed > 3.0) and now - last_t > self.m.stall_s:
                     self.robot.stop()
                     tip = self._summary(fb)["pose"]
-                    self._back_off()
                     raise ContactError(
                         f"{label}: CONTACT at fingertip Z={tip[2]:.1f} (X={tip[0]:.1f}, Y={tip[1]:.1f}) — "
-                        f"something blocked the gripper; stopped and moved up {self.m.contact_backoff_mm:g} mm. "
-                        "That Z is a measured surface height: use it.")
-            if elapsed > self.m.move_timeout_s:
+                        f"something blocked the gripper; {PAUSED}")
+            p_now = np.array(fb["pose"][:3])
+            if prog_p is None or np.linalg.norm(p_now - prog_p) > 1.0:
+                prog_p, prog_t = p_now, now
+            # 20 Nov 182631: a 20 mm move at 2 % with the controller's SpeedFactor low took > 30 s and was stopped
+            # although it was still moving: time out only when it has not progressed for 5 s (or after 4x)
+            if elapsed > self.m.move_timeout_s and (now - prog_t > 5.0 or elapsed > 4 * self.m.move_timeout_s):
                 self.robot.stop()
-                raise MotionStopped(f"{label}: not arrived after {self.m.move_timeout_s}s — stopped.")
+                raise MotionStopped(f"{label}: not arrived after {elapsed:.0f}s (no progress for "
+                                    f"{now - prog_t:.0f}s) — stopped.")
             time.sleep(self.m.poll_s)
 
     @property

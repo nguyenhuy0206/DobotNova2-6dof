@@ -97,6 +97,17 @@ class CameraStream:
         with self._cond:
             return self._jpeg, self._frame_metadata
 
+    def fresh_packet(self, timeout: float = 5.0) -> tuple[bytes | None, tuple]:
+        """A frame captured AFTER this call (None on timeout). latest_* return whatever is buffered: after
+        the idle stop (idle_timeout) that is the last frame from before, possibly a minute old — 20 Nov
+        episode 165941: the wrist picture showed the previous grasp spot, one move behind the robot."""
+        self.touch()
+        with self._cond:
+            start = self._seq
+            if not self._cond.wait_for(lambda: self._seq > start and self._jpeg is not None, timeout=timeout):
+                return None, (None, None, None)
+            return self._jpeg, self._frame_metadata
+
     def latest_image(self) -> np.ndarray | None:
         self.touch()
         return None if self._image is None else self._image.copy()

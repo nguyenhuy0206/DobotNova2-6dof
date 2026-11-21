@@ -42,6 +42,7 @@ def build_toolkit(mode: str | None = None, confirm: ConfirmFn | None = None, *, 
     perception_cfg = perception_cfg or load_perception_config()
     primitives = primitives or create_primitives(robot_cfg)
     primitives.speed_cap = agent_cfg.max_speed
+    primitives.fixed_speed = agent_cfg.fixed_speed
     scene = scene or Scene.from_config(perception_cfg, workspace=robot_cfg.workspace)
     library = library or SkillLibrary()
     if seed_skills:
@@ -55,4 +56,11 @@ def build_toolkit(mode: str | None = None, confirm: ConfirmFn | None = None, *, 
     specs = build_registry(primitives, scene, runner, search) + list(extra_specs or [])
     executor = ActionExecutor(specs, **kwargs)
     runner.executor = search.executor = executor
+    from judge.capture import EvidenceCapture
+    from judge.harness import HarnessJudge
+    from judge.ledger import LEDGER_FILE
+    from judge.spec import load_spec
+    spec = load_spec()
+    executor.judge = HarnessJudge(EvidenceCapture(scene, primitives.get_state, LEDGER_FILE.parent / "evidence", spec),
+                                  spec=spec)
     return executor, Toolkit(primitives, scene, runner, robot_cfg, agent_cfg, perception_cfg)

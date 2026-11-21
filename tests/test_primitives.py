@@ -184,3 +184,11 @@ def test_a_path_from_outside_the_working_sector_may_only_come_back(prims):
         prims._check_linear_path(at(-55), at(-20))                 # further out: refused on the path
     with pytest.raises(ValidationError, match="target"):
         prims._check_linear_path(at(-55), at(-80))                 # nearer, but the target is still outside
+
+
+def test_fixed_speed_overrides_every_requested_speed(prims):
+    """20 Nov (operator): every motion at exactly 50 %; Astra kept asking for 1–2 %."""
+    prims.fixed_speed = 50
+    assert prims._speed(2) == 50 and prims._speed(None) == 50 and prims._speed(80) == 50
+    prims.fixed_speed = None
+    assert prims._speed(2) == 2

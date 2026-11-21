@@ -50,7 +50,10 @@ calibration:
     # 513 mm, and the robot's own touches on the D455 body (keep-out survey: contacts z 492–524, centre 663 mm
     # from the base axis, lens on the side facing the robot) agree with the solve, not with the tape.
     # Checks from the touches instead:
-    env_cam_to_base_mm: 645
+    # 20 Nov ~18:30: the D455 was knocked (replugging its cable): the board then read 29 mm high. The 18:53
+    # solve puts the lens at (288.5, -621.5, 489.5), 685 mm out — the 645 above predates the knock, so the
+    # horizontal check is off until the D455 is touched again (keep-out survey):
+    # env_cam_to_base_mm: 645
     env_cam_height_mm: 510
     wrist_cam_offset_mm: 122   # wrist camera off the tool axis: bracket 57 + 65 to the camera base (camera
                                # sits ~70 mm above that base), tape 18 Nov (warning only)

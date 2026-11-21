@@ -94,9 +94,9 @@ def history_spec(notes: NotesStore) -> ActionSpec:
         q = str(query or "").lower()
         if kind == "episodes":
             from memory.knowledge import CALIBRATION, OLD_CALIBRATION_SINCE
-            rows = [{**{k: h.get(k) for k in ("episode", "at", "success", "blocks_moved", "summary")},
+            rows = [{**{k: h.get(k) for k in ("episode", "at", "claim")},
                      "calib": "tool118_table42" if str(h.get("at") or "") < OLD_CALIBRATION_SINCE else CALIBRATION}
-                    for h in history(last=10000) if not q or q in json.dumps(h).lower()]
+                    for h in history(last=10000, claims_only=True) if not q or q in json.dumps(h).lower()]
             return {"episodes": rows[-limit:], "total": len(rows)}
         if kind == "old_hypotheses":
             old = HypothesisStore()
@@ -142,7 +142,9 @@ def code_specs(get_local) -> list[ActionSpec]:
                    "protected). File: docstring, KIND = 'routine'|'check', def run(ctx, memo, **params) -> dict with "
                    "'ok' (+ 'detail', numbers). ctx: execute(tool, args) / move(dx,dy,dz,drz,frame,speed) / "
                    "vertical(z, step_mm, speed) / tool_hop(dx,dy,speed) — all through the safety-checked executor; "
-                   "tip(), state(), wrist(color,min_area), env(color), anchor(blob), dry, routine(name, memo, **a), "
+                   "tip(), state(), depth_at(pixels, window_px, plane_z, look=True) (D455 depth / base_xyz_mm at pixels "
+                   "of a fresh env picture), wrist(color,min_area) / env(color) (HSV colour-threshold blobs), "
+                   "anchor(blob), dry, routine(name, memo, **a), "
                    "check(...), contact (status/add/dz/target), table_z, block_top_z. memo['vars'][k] = v passes a "
                    "value to later skill steps as {k}. math, statistics, re available; no imports/files. The old "
                    "version is kept (rollback_routine); run_routine runs it on its own.",

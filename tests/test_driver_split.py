@@ -27,3 +27,21 @@ def test_qwen_session_writes_nothing_of_astras(monkeypatch):
     assert s.knowledge.obs.path == STUDENT_RUNS_DIR / "observations.jsonl"
     a = build_explore(mode="dry_run", client=object(), driver="astra")
     assert "save_skill" in a.executor.specs and a.knowledge.obs.path.parent.name == "memory"
+
+
+def test_qwen_episodes_are_never_reviewed_into_astras_memory(tmp_path):
+    import pytest
+
+    from agent.explore import build_explore
+    s = build_explore(mode="dry_run", client=object(), driver="qwen")
+    s.harness.episodes = EpisodeStore(tmp_path)
+    ep = s.harness.episodes.start("task", {"model": "qwen-local:m", "driver": "qwen"})
+    with pytest.raises(ValueError, match="not run by Astra"):
+        s.reflect(ep)
+
+
+def test_the_review_harness_runs_no_judge(tmp_path):
+    from agent.harness import AgentHarness
+    from common.config import AgentConfig
+    h = AgentHarness(None, None, AgentConfig(), episodes=EpisodeStore(tmp_path), judge=False)
+    assert h.judge is None

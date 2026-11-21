@@ -72,11 +72,21 @@ def test_scene_finds_red_block_in_robot_coordinates():
     assert green.base_xyz_mm[2] == pytest.approx(10, abs=1)
 
 
-def test_look_reports_objects_and_image_and_calibration_state():
-    out = scene_with([((0, 0, 220), (320, 240), 20, 0.95)], calibrated=False).look("env")
-    assert out["has_depth"] and not out["calibrated"]
-    assert out["objects"][0]["base_xyz_mm"] is None and out["objects"][0]["depth_m"] == 0.95
+def test_look_is_the_picture_only_and_depth_at_answers_for_its_pixels():
+    """20 Nov (operator): look detects nothing; Astra reads the picture and asks depth_at for pixels."""
+    scene = scene_with([((0, 0, 220), (320, 240), 20, 0.95)])
+    with pytest.raises(ValueError, match="look at the env camera first"):
+        scene.depth_at([[320, 240]])
+    out = scene.look("env")
+    assert out["has_depth"] and out["calibrated"] and "objects" not in out
     assert len(out["image_jpeg_b64"]) > 100
+    d = scene.depth_at([[320, 240], [5000, 5]])["points"]
+    assert d[0]["depth_mm"] == pytest.approx(950, abs=1) and d[0]["valid_fraction"] == 1.0
+    assert d[0]["base_xyz_mm"] == pytest.approx([400, 0, 50], abs=1)      # same point find() gave before
+    assert "outside the image" in d[1]["error"]
+    p = scene.depth_at([[320, 240]], plane_z=50)["points"][0]
+    assert p["at_plane_xyz_mm"] == pytest.approx([400, 0, 50], abs=1)    # same point, from the ray alone
+    assert p["depth_spread_mm"] == 0
 
 
 def test_skill_param_filling():
@@ -124,7 +134,7 @@ def test_red_block_into_green_frame_end_to_end(kit, sim, gripper):
     assert place["result"]["ok"] and gripper.position == 1000
     assert sim.state["pose"][:2] == pytest.approx(frame[:2], abs=1)
     lib = executor.specs["list_skills"].handler()
-    assert next(s for s in lib if s["name"] == "pick_from_above")["successes"] == 1
+    assert next(s for s in lib if s["name"] == "pick_from_above")["successes"] == 0
 
 
 def test_dry_run_skill_shows_filled_steps_without_moving(prims, sim, tmp_path):
@@ -141,7 +151,7 @@ def test_skill_failure_stops_and_is_counted(kit, sim):
     r = executor.execute("run_skill", {"name": "pick_from_above", "params": {"x": 400, "y": 0, "z": -500}})
     assert r["ok"] and not r["result"]["ok"] and "workspace" in r["result"]["failed_step"]["error"]
     lib = executor.specs["list_skills"].handler()
-    assert next(s for s in lib if s["name"] == "pick_from_above")["failures"] == 1
+    assert next(s for s in lib if s["name"] == "pick_from_above")["failures"] == 0
 
 
 def test_save_skill_validates_steps(kit):
@@ -313,3 +323,30 @@ def test_leave_one_out_reports_unseen_error():
     cam = (base / 1000) @ inv[:3, :3].T + inv[:3, 3] + rng.normal(0, 0.002, (8, 3))
     loo = np.linalg.norm(leave_one_out_errors(cam, base), axis=1)
     assert 1 < loo.mean() < 10          # honest: bigger than the fit residual, same order as the noise
+
+
+def test_wrist_overlay_marks_the_fingertips_where_the_rigid_camera_sees_them(tmp_path):
+    """20 Nov 164552: the wrist camera looks 69° off the tool axis; the fingertip marks come from the
+    calibration. Camera and fingers move together, so the marks do not depend on the robot pose."""
+    import json
+    import numpy as np
+    from perception.wrist_overlay import WristOverlay
+    X = np.eye(4)
+    X[:3, 3] = [0.0, 0.0, 0.0]                         # camera at the flange, looking down the tool axis
+    (tmp_path / "c.json").write_text(json.dumps({"wrist_intrinsics": {"K": [[500, 0, 320], [0, 500, 240], [0, 0, 1]],
+                                                                       "dist": [0, 0, 0, 0, 0]},
+                                                  "T_flange_wrist": X.tolist()}))
+    ov = WristOverlay(tmp_path / "c.json", lambda: {"flange_pose": [0, 0, 300, 180, 0, 0], "gripper": {"position": 500}},
+                      tool_length_mm=100.0, finger_half_gap_mm=30.0)
+    tips = ov()["fingertips_px"]
+    assert tips["centre"] == pytest.approx([320, 240], abs=0.5)
+    assert tips["finger+"] == pytest.approx([320, 240 + 500 * 15 / 100], abs=0.5)     # half open: 15 mm off axis
+    moved = ov.project([-300, -400, 120, 180, 0, 90], 500)
+    assert moved == tips                                                             # pose-independent
+
+
+def test_routines_and_skills_may_use_depth_at():
+    """20 Nov: look no longer detects; without depth_at Astra's own code could not locate anything."""
+    from actions import astra_code, skill_runner
+    assert "depth_at" in astra_code.SKILL_TOOLS and "depth_at" in skill_runner.SKILL_TOOLS
+    assert hasattr(astra_code.RoutineContext, "depth_at")

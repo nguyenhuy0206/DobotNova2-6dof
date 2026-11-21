@@ -91,19 +91,9 @@ class ExploreSession:
         return problems
 
     def run_episode(self, task: str, reflect: bool = True) -> dict:
-        """One attempt (robot moves), then Astra reviews it (no robot): outcome, skills, knowledge."""
-        from agent.explore.learning import history
-
-        # the record as counts only: the free-text summaries are experience, not knowledge
-        past = history(last=10000)
+        """One attempt (robot moves), then Astra reviews it (no robot). Success comes from the judge ledger;
+        the review records Astra's claim only."""
         prompt = task.strip()
-        if past:
-            wins = sum(1 for h in past if h["success"])
-            moved = sum(int(h.get("blocks_moved") or 0) for h in past)
-            last = past[-1]
-            prompt += (f"\n\nEpisode record (all tasks so far): {len(past)} reviewed episodes, {wins} successful, "
-                       f"{moved} objects moved as their task asked; last ({last['at'][:16]}): "
-                       f"{'SUCCESS' if last['success'] else 'FAIL'}, {last['blocks_moved']} moved.")
         if self.knowledge is not None and self.knowledge.obs.items:
             items = self.knowledge.obs.items
             live = [h for c in self.knowledge.concepts if not c.get("archived") for h in c["hypotheses"]
@@ -129,7 +119,7 @@ class ExploreSession:
         if self.harness.episodes.driver(episode_id) != "astra":
             raise ValueError(f"{episode_id} was not run by Astra (driver {self.harness.episodes.driver(episode_id)}): "
                              "it is not reviewed into Astra's memory")
-        recorder = OutcomeRecorder(self.harness.episodes)
+        recorder = OutcomeRecorder(self.harness.episodes, ledger=self.harness.judge.ledger)
         recorder.episode_id = episode_id
         cfg = copy.copy(self.harness.config)
         # ONE reflection pass with a few memory calls; never more than reflect_max_steps requests
@@ -137,7 +127,7 @@ class ExploreSession:
         cfg.max_output_tokens = max(cfg.max_output_tokens, 6000)
         reviewer = AgentHarness(self.harness.client, reflect_executor(self.executor, recorder), cfg,
                                 episodes=EpisodeStore(self.harness.episodes.root / "reflections"),
-                                skills=self.harness.skills, send_images=False, notes=self.knowledge,
+                                skills=self.harness.skills, send_images=False, notes=self.knowledge, judge=False,
                                 options=HarnessOptions.from_variant("V3" if self.harness.options.variant in ("V1", "V3")
                                                                     else "V0"))
         shots = failure_images(self.harness.episodes, episode_id)
@@ -160,6 +150,19 @@ class ExploreSession:
             if self.knowledge is not None:
                 self.knowledge.focus_episode = None
         return {"reflection": text, "outcome": recorder.last, "reflection_metrics": reviewer.last_metrics}
+
+    def set_global_speed(self) -> str:
+        """Controller SpeedFactor (global %, multiplies every command's speed) to the explore setting.
+        20 Nov 182631: it had been lowered on the controller; commands at 2 % then crawled at ~0.1 %."""
+        level = getattr(self.cfg, "speed_factor", 0)
+        if not level:
+            return "unchanged"
+        try:
+            self.kit.primitives.robot.speed_factor(int(level))
+            return f"{int(level)} %"
+        except (RobotError, OSError) as exc:
+            log.warning("SpeedFactor failed: %s", exc)
+            return f"NOT set ({exc})"
 
     def arm_collision_detection(self) -> str:
         if not self.cfg.collision_level:
@@ -210,6 +213,14 @@ def build_explore(confirm=None, mode: str | None = None,
     scene = Scene.from_config(perception_cfg, workspace=robot_cfg.workspace)
     if primitives.table_z_mm is not None:      # tape on the arm/wrist camera is not a block
         scene.object_z_max = primitives.table_z_mm + 150
+    from calibration.files import CALIBRATION_FILE
+    if CALIBRATION_FILE.exists():              # fingertips marked in the wrist picture (calibration + robot pose)
+        from perception.wrist_overlay import WristOverlay
+        try:
+            scene.wrist_overlay = WristOverlay(CALIBRATION_FILE, primitives.get_state, robot_cfg.gripper.tool_length_mm,
+                                               robot_cfg.gripper.finger_half_gap_mm)
+        except (KeyError, ValueError) as exc:
+            log.warning("no wrist overlay: %s", exc)
     guard = (RobotViewGuard(scene, cfg.view_guard.marker_color, cfg.view_guard.min_area_px)
              if cfg.view_guard.enabled else None)
     primitives.view_guard = guard
@@ -240,7 +251,7 @@ def build_explore(confirm=None, mode: str | None = None,
     if block_top is not None:
         runner.constants["block_top_z"] = block_top
     runner.require_validation = cfg.skills.require_validation
-    runner.auto_promote_after = cfg.skills.auto_promote_after
+    runner.auto_promote_after = 0
     runner.supervisor = (lambda name, params: confirm(f"CANDIDATE skill {name} (supervised run)", params)) \
         if confirm is not None and cfg.skills.require_validation else None
     if cfg.skills.builtin_pick_place:

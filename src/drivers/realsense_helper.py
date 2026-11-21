@@ -16,6 +16,7 @@ end up in the repo.
 from __future__ import annotations
 
 import argparse
+import os
 import io
 import json
 import logging
@@ -84,7 +85,11 @@ class FrameSource:
                 self._stop.wait(self.retry_s)
                 continue
             self.profile = getattr(cam, "profile_used", None)
-            log.info("RealSense streaming %s", self.profile)
+            self.preset = getattr(cam, "preset_used", None)
+            if getattr(cam, "preset_error", None):
+                log.warning("visual preset not set (%s): streaming with the camera's own setting", cam.preset_error)
+            log.info("RealSense streaming %s, preset %s, USB %s", self.profile, self.preset or "camera's own",
+                     getattr(cam, "usb", "?") or "?")
             count, t0 = 0, time.monotonic()
             try:
                 while not self._stop.is_set():
@@ -131,7 +136,8 @@ def make_handler(source: FrameSource):
                 else:
                     self._send(HTTPStatus.OK, pack_frame(frame), "application/octet-stream")
             elif self.path == "/status":
-                body = {"profile": source.profile, "fps": round(source.fps, 1), "error": source.error,
+                body = {"profile": source.profile, "preset": getattr(source, "preset", None),
+                        "fps": round(source.fps, 1), "error": source.error,
                         "has_frame": source.latest() is not None}
                 self._send(HTTPStatus.OK, json.dumps(body).encode(), "application/json")
             else:
@@ -173,11 +179,15 @@ def main() -> None:
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--fps", type=int, default=15)
+    # Off by default: on USB 2 / macOS (20 Nov) setting it timed out (get_xu) and the stream then stalled
+    # ("Frame didn't arrive") until the D455 was replugged. Try high_accuracy again on USB 3.
+    p.add_argument("--preset", default=os.environ.get("D455_PRESET", ""),
+                   help="D4xx visual preset on the depth sensor, e.g. high_accuracy ('' = leave the camera's setting)")
     p.add_argument("--watch-pid", type=int, help="exit when this process exits (used by run_ui.sh --depth)")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
-    source = FrameSource(lambda: RealSenseCamera(args.width, args.height, args.fps)).start()
+    source = FrameSource(lambda: RealSenseCamera(args.width, args.height, args.fps, preset=args.preset)).start()
     server = serve(source, "127.0.0.1", args.port)   # localhost only
     log.info("depth helper on http://127.0.0.1:%d  (Ctrl+C to stop)", args.port)
     if args.watch_pid:

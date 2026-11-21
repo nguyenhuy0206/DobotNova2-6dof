@@ -58,7 +58,7 @@ class EpisodeMetrics:
     grasp_attempts: int = 0
     safety_stops: int = 0               # contact, table, view guard, IK, operator rejection
     skill_runs: int = 0
-    skill_failures: int = 0
+    skill_claim_failures: int = 0
     model_latency_s: float = 0.0
     max_context_tokens: int = 0         # largest single-request input (shows context growth)
 
@@ -90,8 +90,7 @@ class EpisodeMetrics:
             self.skill_runs += 1
             inner = result.get("result") or {}
             if not ok or not inner.get("ok", True):
-                self.skill_failures += 1
-            self.grasp_attempts += int(inner.get("grasp_attempts", 0) or 0)
+                self.skill_claim_failures += 1
 
     def summary(self) -> dict:
         d = asdict(self)

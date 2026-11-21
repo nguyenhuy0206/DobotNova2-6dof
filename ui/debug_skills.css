@@ -48,6 +48,8 @@
 .sk-line { font-size: 10px; color: var(--text); line-height: 1.6; }
 
 .sk-row { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+.sk-actions { flex-wrap: wrap; }
+.sk-actions .btn { flex-shrink: 0; }
 .sk-row input[type=range] { flex: 1; }
 .sk-label { display: block; font-size: 10px; color: var(--text); margin: 8px 0 5px; }
 .sk-label small { color: var(--muted); }
@@ -82,7 +84,7 @@
 /* generated skill forms */
 .sk-skills {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr));
   gap: 10px;
 }
 .sk-skill {
@@ -100,7 +102,7 @@
 .sk-fields label.wide { grid-column: 1 / -1; }
 .sk-fields .field { padding: 6px 7px; font-size: 10px; }
 .sk-fields .sk-array { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 3px; }
-.sk-skill footer { display: flex; gap: 6px; margin-top: auto; }
+.sk-skill footer { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
 
 .sk-result {
   margin: 0; max-height: 220px; overflow: auto;
@@ -111,7 +113,7 @@
 .sk-result.error { color: #ffc2ca; }
 
 /* camera windows */
-.sk-cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.sk-cams { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; }
 .sk-cam { border: 1px solid var(--border); border-radius: 11px; overflow: hidden; background: #0f1a2c; min-width: 0; }
 .sk-cam header {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -136,6 +138,7 @@
   .sk-grid .sk-box:first-child { grid-column: 1 / -1; }
 }
 @media (max-width: 650px) {
+  .sk-panel .card-head { flex-wrap: wrap; }
   .sk-grid { grid-template-columns: 1fr; }
   .sk-readout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sk-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
