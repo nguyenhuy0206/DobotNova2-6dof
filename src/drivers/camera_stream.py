@@ -37,7 +37,38 @@ def open_device(cfg: CameraConfig):
     if cfg.source == "realsense":
         # Depth needs root on macOS; the root-only helper owns the D455 (scripts/run_depth.sh).
         return RealSenseRemoteCamera(cfg.helper_url)
-    return OpenCVCamera(cfg.index, cfg.width, cfg.height, 30)
+    index = cfg.index
+    if getattr(cfg, "device", ""):
+        found = device_index(cfg.device)
+        if found is None:
+            raise RuntimeError(f"camera {cfg.device} not found (is it plugged in?)")
+        index = found
+    return OpenCVCamera(index, cfg.width, cfg.height, 30)
+
+
+def camera_order() -> list[str]:
+    """The video devices in macOS order, as 'vid:pid' for USB cameras (others: their unique id). This is the
+    order AVFoundation (and so OpenCV's index) uses on this Mac (checked 24 Nov against ffmpeg's list)."""
+    import json
+    import subprocess
+    try:
+        raw = subprocess.run(["system_profiler", "SPCameraDataType", "-json"], capture_output=True, text=True,
+                             timeout=10).stdout
+        items = json.loads(raw).get("SPCameraDataType", [])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    out = []
+    for it in items:
+        uid = str(it.get("spcamera_unique-id", ""))
+        out.append(f"{uid[-8:-4]}:{uid[-4:]}".lower() if uid.startswith("0x") and len(uid) >= 10 else uid)
+    return out
+
+
+def device_index(device: str) -> int | None:
+    """OpenCV index of the USB camera 'vid:pid' (first match), or None when it is not plugged in."""
+    want = device.lower().strip()
+    order = camera_order()
+    return order.index(want) if want in order else None
 
 
 def depth_colormap(depth_m: np.ndarray, max_m: float = 4.0) -> np.ndarray:
@@ -65,7 +96,9 @@ class CameraStream:
                  opener: Callable[[CameraConfig], object] = open_device,
                  idle_timeout: float = 15.0, retry_s: float = 3.0, max_width: int = 960):
         self.name, self.cfg, self.opener = name, cfg, opener
-        self.idle_timeout, self.retry_s, self.max_width = idle_timeout, retry_s, max_width
+        self.idle_timeout, self.retry_s = idle_timeout, retry_s
+        own = getattr(cfg, "max_width", None)
+        self.max_width = (own or 10 ** 6) if own is not None else max_width     # 0 in the config = no downscale
         self._cond = threading.Condition()
         self._jpeg: bytes | None = None
         self._image: np.ndarray | None = None
@@ -160,7 +193,9 @@ class CameraStream:
                 self.error = error
                 self._stop.wait(self.retry_s)
                 continue
-            log.info("camera %s opened (%s #%s)", self.name, self.cfg.source, self.cfg.index)
+            dev = getattr(self.cfg, "device", "")
+            log.info("camera %s opened (%s %s)", self.name, self.cfg.source,
+                     f"USB {dev} = #{device_index(dev)}" if dev else f"#{self.cfg.index}")
             try:
                 self._capture(device)
             except Exception as exc:  # noqa: BLE001
@@ -239,9 +274,9 @@ class CameraHub:
         if not 0 <= index <= 9:
             raise ValueError("index must be 0–9")
         stream = self.streams[name]
-        stream.reconfigure(source=source, index=index)
+        stream.reconfigure(source=source, index=index, device="")      # a pick in the UI wins over the id
         overrides = self._load_overrides()
-        overrides[name] = {"source": source, "index": index}
+        overrides[name] = {"source": source, "index": index, "device": ""}
         self.overrides_file.parent.mkdir(parents=True, exist_ok=True)
         self.overrides_file.write_text(json.dumps(overrides, indent=2) + "\n", encoding="utf-8")
         return stream.status()
@@ -253,6 +288,6 @@ class CameraHub:
     def _load_overrides(self) -> dict:
         try:
             value = json.loads(self.overrides_file.read_text(encoding="utf-8"))
-            return {k: {f: v for f, v in d.items() if f in ("source", "index")} for k, d in value.items()}
+            return {k: {f: v for f, v in d.items() if f in ("source", "index", "device")} for k, d in value.items()}
         except (OSError, ValueError, AttributeError):
             return {}

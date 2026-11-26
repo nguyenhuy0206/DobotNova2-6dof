@@ -352,6 +352,7 @@ class PrimitiveSkills:
         start = time.monotonic()
         last_p, last_t, moved = None, start, False
         prog_p, prog_t = None, start           # progress watch for the timeout (any move, not only contact)
+        seen_running = False
         while True:
             now = time.monotonic()
             elapsed = now - start
@@ -367,7 +368,12 @@ class PrimitiveSkills:
                         f"controller's collision detection stopped the arm; {PAUSED}")
                 raise MotionStopped(f"{label}: robot alarm during motion — {PAUSED}")
             idle = fb["running"] == 0
-            if idle and (reached(fb) if reached else elapsed >= self.m.start_grace_s):
+            seen_running = seen_running or not idle
+            # 24 Nov (episode 163425): a 0.5 mm insert is already "reached" before it starts (arrive_tol_mm 1.0):
+            # it returned the old pose and the next picture came before the move. Idle at the target counts
+            # only once the move was seen running, or after the start grace.
+            started = seen_running or elapsed >= self.m.start_grace_s
+            if idle and started and (reached(fb) if reached else True):
                 return self._summary(fb)
             if contact:
                 p = np.array(fb["pose"][:3])
@@ -525,6 +531,43 @@ class PrimitiveSkills:
             self.robot.movl(target, speed)
             result = self._wait(self._pose_reached(target), "move_relative", contact=contact)
             return self._after_motion(result, self._undo_linear(start, speed))
+
+    INSERT_MIN_MM = 0.1
+    INSERT_AXES = {"+z": (2, 1), "+x": (0, 1), "-x": (0, -1), "+y": (1, 1), "-y": (1, -1)}
+
+    def insert(self, depth_mm: float, retract: bool = False, axis: str | None = None) -> dict:
+        """Needle insertion (23 Nov, operator): straight along the gripper's own +Z (the approach direction)
+        by depth_mm, at motion.insert_speed (not the fixed agent speed), without the stall watch — the
+        needle is small and a slow stroke would read as a stall. Table floor, path, self-collision and IK
+        checks apply. retract=True: back along the same line to the start afterwards."""
+        depth = float(depth_mm)
+        # 24 Nov (operator): 0.1 mm is the smallest stroke
+        if not self.INSERT_MIN_MM <= depth <= self.m.insert_max_mm:
+            raise ValidationError(f"depth_mm must be in [{self.INSERT_MIN_MM:g}, {self.m.insert_max_mm:g}] "
+                                  f"(got {depth:g})")
+        axis = axis or getattr(self.m, "insert_axis", "+z")
+        if axis not in self.INSERT_AXES:
+            raise ValidationError(f"axis must be one of {sorted(self.INSERT_AXES)} (gripper frame)")
+        col, sign = self.INSERT_AXES[axis]
+        speed = v.check_speed(int(self.m.insert_speed), self.cfg.speed)
+        with self.a.lock:
+            fb = self._ready()
+            start = self.flange_from_controller(fb["pose"])
+            R0 = self._rot(start)
+            # the fingertips move along tool Z; the orientation stays, so the flange moves the same way
+            target = [*map(float, np.array(start[:3]) + R0[:, col] * sign * depth), *start[3:]]
+            self._check_linear_path(start, target)
+            self._self_check_linear(fb, start, target)
+            self._ik(target, fb["joints_deg"])
+            self.robot.movl(target, speed)
+            result = self._wait(self._pose_reached(target), "insert")
+            out = {**result, "inserted_mm": depth, "axis": f"tool {axis}", "speed": speed}
+            if retract:
+                self.robot.movl(start, speed)
+                back = self._wait(self._pose_reached(start), "insert retract")
+                out.update(pose=back["pose"], flange_pose=back["flange_pose"], joints_deg=back["joints_deg"],
+                           retracted=True)
+            return out
 
     def jog_joint(self, joint: int, degrees: float, speed: int | None = None) -> dict:
         """Rotate one joint by a small relative angle."""

@@ -60,7 +60,7 @@ def fill(value, params: dict):
 # change what is safe, what is remembered, or other skills)
 SKILL_TOOLS = {"get_state", "move_to_pose", "move_to_joints", "move_relative", "jog_joint", "go_to_position",
                "open_gripper", "close_gripper", "set_gripper", "stop", "look", "find_objects",
-               "check_robot_in_view", "depth_at"}     # 20 Nov: pictures via look; depth/base coordinates via depth_at
+               "check_robot_in_view", "depth_at", "locate_object", "pick_object", "place_object", "insert"}
 
 
 class SkillRunner:
@@ -121,7 +121,7 @@ class SkillRunner:
             if not out.get("ok") and "error_result" in out:
                 out["error"] = out["error_result"].get("error")
             return {"kind": "routine", "name": st["routine"], **out}
-        r = self.executor.execute(st["tool"], args)
+        r = self.executor.execute(st["tool"], args, internal=True)
         if r.get("ok") and isinstance(r.get("result"), dict):
             memo[st["tool"]] = r["result"]
         return {"kind": "tool", "name": st["tool"], **r}

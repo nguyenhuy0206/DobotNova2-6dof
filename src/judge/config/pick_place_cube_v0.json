@@ -1,14 +1,45 @@
 {
   "task": "pick_place_cube_v0",
   "object_id": "operator_bound_cube",
-  "object_color": null,
-  "destination": [],
+  "object_color": "blue",
+  "destination": [
+    [
+      334,
+      296
+    ],
+    [
+      326,
+      301
+    ],
+    [
+      287,
+      307
+    ],
+    [
+      281,
+      304
+    ],
+    [
+      276,
+      288
+    ],
+    [
+      324,
+      280
+    ]
+  ],
   "finger_reference": null,
   "calibration_hash": null,
   "validated_predicates": [],
-  "initial": ["object_identifiable", "object_outside_destination"],
-  "required_sequence": ["held_after_lift", "placed_on_table"],
-  "deadline_s": 60,
+  "initial": [
+    "object_identifiable",
+    "object_outside_destination"
+  ],
+  "required_sequence": [
+    "held_after_lift",
+    "placed_on_table"
+  ],
+  "deadline_s": 900,
   "unknown": "no_credit",
   "max_age_ns": 2000000000,
   "max_skew_ns": 500000000,

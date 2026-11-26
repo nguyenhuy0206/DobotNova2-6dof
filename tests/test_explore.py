@@ -359,7 +359,8 @@ def test_preflight_refuses_without_an_env_calibration_and_never_expires_one():
     prims = SimpleNamespace(get_state=lambda: {"mode": 5, "error": False}, table_z_mm=0.3,
                             cfg=SimpleNamespace(gripper=SimpleNamespace(via_ui=False)))
     scene = SimpleNamespace(env_calibration=None, observe=lambda cam: None)
-    me = SimpleNamespace(kit=SimpleNamespace(primitives=prims, scene=scene), view_guard=None)
+    me = SimpleNamespace(kit=SimpleNamespace(primitives=prims, scene=scene), view_guard=None,
+                         cfg=SimpleNamespace(cameras=["env", "wrist"], program_tools=["depth_at"]))
     assert any("not calibrated" in p for p in ExploreSession.preflight(me))
     scene.env_calibration = object()
     assert ExploreSession.preflight(me) == []

@@ -47,6 +47,10 @@ class SkillsAPI:
             require_confirm(data.get("confirm"), "Bật 'Workspace clear' trước khi Enable (nhả phanh).")
         if action == "drag_on":
             require_confirm(data.get("confirm"), "Bật 'Workspace clear' trước khi Drag (tay đỡ robot).")
+        if action in ("enable", "clear"):
+            # the operator has dealt with the robot: motion from this app may be sent again (the executor
+            # refuses every motion after a contact / alarm / STOP until then)
+            self.executor.stopped = None
         return {"ok": True, "action": action, "result": self.primitives.a.system(action)}
 
     def run(self, data: dict) -> dict:

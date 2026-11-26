@@ -26,7 +26,7 @@ def test_qwen_session_writes_nothing_of_astras(monkeypatch):
     assert not set(QWEN_NO_WRITE) & set(s.executor.specs)
     assert s.knowledge.obs.path == STUDENT_RUNS_DIR / "observations.jsonl"
     a = build_explore(mode="dry_run", client=object(), driver="astra")
-    assert "save_skill" in a.executor.specs and a.knowledge.obs.path.parent.name == "memory"
+    assert set(a.cfg.program_tools) <= set(a.executor.specs) and a.knowledge.obs.path.parent.name == "memory"
 
 
 def test_qwen_episodes_are_never_reviewed_into_astras_memory(tmp_path):

@@ -74,9 +74,10 @@ def test_tools_outside_skill_set_are_refused(prims, tmp_path):
     assert not out["ok"] and "not available" in out["detail"]
 
 
-def test_seeded_routines_load():
+def test_astra_own_code_loads_without_errors():
+    """src/agent/astra_skills is Astra's runtime output (not in git since 21 Nov): whatever is there must load."""
     code = AstraCode.default()
-    assert code.names("routine") == {"approach", "grasp_ladder"} and not code.names("check") and not code.errors
+    assert not code.errors
 
 
 def test_lifted_fails_when_the_gripper_dropped_the_cube():

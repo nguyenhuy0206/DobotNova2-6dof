@@ -81,7 +81,8 @@ class FakeScene:
     def look(self, camera="env", colors=None, zoom=None, image="auto"):
         objs = [o.summary() for c in (colors or self.colors) for o in self.find(c, camera)]
         return {"camera": camera, "calibrated": camera == "env", "objects": objs,
-                "image_jpeg_b64": self._image(camera)}
+                "image_jpeg_b64": self._image(camera),
+                **({"zoom": list(zoom), "picture_scale": 2.0} if zoom else {})}
 
     def find_report(self, color, camera="env"):
         return {"objects": [o.summary() for o in self.find(color, camera)]}
@@ -151,7 +152,7 @@ class ScriptedAstra:
         prev = self.requests[-1]["context"] if (self.requests and kw.get("previous_response_id")) else 0
         context = prev + new + 60                          # chained: everything before is billed again
         inp = fixed + context
-        self.requests.append({"input": inp, "context": context, "images": images})
+        self.requests.append({"input": inp, "context": context, "images": images, "raw": kw.get("input")})
         return NS(input_tokens=inp, output_tokens=60, total_tokens=inp + 60,
                   input_tokens_details=NS(cached_tokens=fixed if len(self.requests) > 1 else 0),
                   output_tokens_details=NS(reasoning_tokens=0))
@@ -212,7 +213,12 @@ def build(variant: str, tmp, plan=None, object_at: int | None = 776):
             memo.setdefault("vars", {})["measured_top"] = c[2]
             sim.state["pose"] = [tip[0], tip[1], c[2] + 15, *tip[3:]]
             return {"ok": True, "measured_top": c[2]}
-    runner.local = SimTouch(prims, scene, ex, settle_s=0)
+    import shutil
+    from pathlib import Path
+    from actions.astra_code import AstraCode
+    code_dir = tmp / "routines"                                    # fixed routines: not Astra's runtime folder
+    shutil.copytree(Path(__file__).parent / "fixture_routines", code_dir)
+    runner.local = SimTouch(prims, scene, ex, settle_s=0, code=AstraCode(code_dir, core=SimTouch))
     ensure_pick_place_skills(runner.library)
     opts = HarnessOptions.from_variant(variant)
     client = ScriptedAstra(plan or pick_place_plan(), chunk=opts.chunk.max_horizon if opts.chunk.enabled else 1)

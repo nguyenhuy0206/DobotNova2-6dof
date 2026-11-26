@@ -31,6 +31,7 @@ from drivers.nova2 import Nova2  # noqa: E402
 from drivers.camera_stream import CameraHub  # noqa: E402
 from ui.camera_api import BOUNDARY, CameraAPI  # noqa: E402
 from ui.skills_api import SkillsAPI  # noqa: E402
+from ui.tasks_api import TasksAPI  # noqa: E402
 
 log = get_logger("ui")
 MAX_BODY = 5_500_000
@@ -43,6 +44,7 @@ class Handler(BaseHTTPRequestHandler):
     actions: RobotActions
     skills: SkillsAPI
     cameras: CameraAPI
+    tasks: TasksAPI
 
     def log_message(self, fmt, *args):
         log.debug(fmt, *args)
@@ -84,6 +86,9 @@ class Handler(BaseHTTPRequestHandler):
         if static is not None:
             self.send_file(static, STATIC_TYPES[static.suffix])
             return
+        if self.path == "/api/tasks/env/frame.jpg":
+            self.get_task_frame()
+            return
         if self.path.startswith("/api/cameras/"):
             self.get_camera()
             return
@@ -97,6 +102,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
         self.respond(HTTPStatus.NOT_FOUND, {"error": "Không tìm thấy."})
+
+    # -- task frames -------------------------------------------------------
+    def get_task_frame(self):
+        try:
+            jpeg = self.tasks.frame_jpeg()
+        except (OSError, RobotError, ValueError) as exc:
+            self.respond(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(jpeg)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(jpeg)
 
     # -- cameras -----------------------------------------------------------
     def camera_route(self) -> tuple[str, str]:
@@ -168,6 +187,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/skills/run": self.skills.run,
             "/api/skills/system": self.skills.system,
             "/api/gripper/driver": self.skills.gripper_driver,
+            "/api/tasks/locate": lambda data: self.tasks.locate(data),
+            "/api/tasks/pick": lambda data: self.tasks.pick(data),
+            "/api/tasks/place": lambda data: self.tasks.place(data),
+            "/api/tasks/insert": lambda data: self.tasks.insert(data),
         }
         route = routes.get(self.path)
         if route is None and self.path.startswith("/api/cameras/"):
@@ -241,6 +264,7 @@ def main():
     Handler.actions = RobotActions(Nova2(args.ip, cfg.timeout_s), cfg)
     # the app OWNS the gripper bus (gripper.via_ui): other processes call /api/gripper/driver
     Handler.skills = SkillsAPI(create_primitives(actions=Handler.actions, owner=True))
+    Handler.tasks = TasksAPI(Handler.skills.executor, cfg.workspace)
     hub = CameraHub(cfg.cameras)
     if os.environ.get("NOVA2_DEPTH") == "1" and "env" in hub:
         hub.select_device("env", "realsense", 0)     # scripts/run_vision.sh

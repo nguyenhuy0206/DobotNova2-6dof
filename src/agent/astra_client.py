@@ -45,8 +45,13 @@ class AstraClient:
             kwargs["instructions"] = instructions
         if self.config.truncation:
             kwargs["truncation"] = self.config.truncation
+        reasoning = {}
+        if getattr(self.config, "reasoning_effort", ""):
+            reasoning["effort"] = self.config.reasoning_effort
         if getattr(self.config, "reasoning_summary", "") and not getattr(self, "_no_reasoning_summary", False):
-            kwargs["reasoning"] = {"summary": self.config.reasoning_summary}
+            reasoning["summary"] = self.config.reasoning_summary
+        if reasoning:
+            kwargs["reasoning"] = reasoning
         if instructions:
             # same instructions + tools every turn: one cache key so they are billed as cached input
             import hashlib
@@ -58,9 +63,12 @@ class AstraClient:
             except BadRequestError as exc:
                 if "reasoning" not in kwargs or "reasoning" not in str(exc).lower():
                     raise
-                # the endpoint does not take reasoning summaries: never ask again in this session
+                # the endpoint does not take reasoning summaries: never ask again in this session (the effort
+                # setting is kept when it was asked for)
                 self._no_reasoning_summary = True
                 kwargs.pop("reasoning")
+                if getattr(self.config, "reasoning_effort", ""):
+                    kwargs["reasoning"] = {"effort": self.config.reasoning_effort}
                 return self.client.responses.create(**kwargs)
         except RateLimitError as exc:
             body = str(getattr(exc, "body", "") or exc)

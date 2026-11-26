@@ -94,6 +94,11 @@ class MotionConfig:
     # elbow down onto the table (19 Nov); 0 = off
     elbow_table_clearance_mm: float = 60.0
     home_joints: list[float] = field(default_factory=lambda: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0])
+    # insert (needle): a straight stroke along the gripper's own Z at its own slow speed (the only motion not at
+    # the fixed agent speed); no stall watch (a slow stroke looks like a stall). Floor / path / IK checks stay.
+    insert_speed: int = 5
+    insert_max_mm: float = 60.0
+    insert_axis: str = "+z"             # default stroke axis in the gripper frame (+z, +x, -x, +y, -y)
 
 
 @dataclass
@@ -131,10 +136,16 @@ class CameraConfig:
     label: str = "Camera"
     source: str = "opencv"      # opencv (any UVC cam, colour) | realsense (D455 colour + depth)
     index: int = 0              # OpenCV device number (macOS order != name order; pick in the UI)
+    # USB "vid:pid" (e.g. "0c45:636b"): find the device by its hardware id instead of its index, which changes
+    # when a camera is plugged in (24 Nov: a second "USB Camera" moved the wrist from 0 to 1). "" = use index.
+    device: str = ""
     width: int = 640            # requested capture size
     height: int = 480
     fps: float = 10.0           # frames streamed to the browser
     jpeg_quality: int = 70
+    # widest frame served (/api/cameras/<name>/frame.jpg, also what the agent sees); 0 = full resolution.
+    # 24 Nov: the wrist camera serves full resolution so a zoomed look shows the needle eye.
+    max_width: int = 960
     helper_url: str = "http://127.0.0.1:8766"   # source=realsense: depth helper (scripts/run_depth.sh)
 
 
@@ -177,6 +188,7 @@ class AgentConfig:
     allowed_tools: list[str] = field(default_factory=list)  # empty = all registered
     system_prompt: str = ""
     truncation: str = ""       # "auto": let the API drop old turns in long runs (explore mode)
+    reasoning_effort: str = ""    # "low" / "medium" / "high": how much the model reasons per request ("" = its default)
     reasoning_summary: str = ""   # "auto" / "concise" / "detailed": ask for a summary of the model's reasoning (logged)
 
 

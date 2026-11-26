@@ -31,7 +31,13 @@ warn() { echo "   ! $*"; }
 echo ">> 1/4 Cameras on USB"
 USB="$(system_profiler SPUSBDataType 2>/dev/null || true)"
 if grep -q "RealSense" <<<"$USB"; then ok "Intel RealSense D455"
-else warn "D455 NOT found — replug its USB-C cable (use a USB 3 port/cable if you can)"; fi
+elif [[ $DEPTH == 1 ]]; then
+    # 24 Nov: the D455 was replaced by a front USB camera: no depth helper, no sudo
+    ok "no D455 plugged in: starting without the depth helper (same as --rgb)"; DEPTH=0
+fi
+CAMS="$(system_profiler SPCameraDataType 2>/dev/null || true)"
+if grep -q "VendorID_13028 ProductID_37922" <<<"$CAMS"; then ok "Front camera (USB 32e4:9422)"
+else warn "Front camera (USB 32e4:9422) NOT found — replug it"; fi
 if grep -q "USB 2.0 Camera" <<<"$USB"; then ok "Wrist webcam (USB 2.0 Camera)"
 else warn "Wrist webcam NOT found — replug it"; fi
 

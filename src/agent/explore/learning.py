@@ -45,6 +45,17 @@ Finish with a 3-line plain-text summary.
 """
 
 
+REFLECT_TOOLS_PROGRAM = ["record_episode_outcome", "list_routines", "read_routine", "write_routine", "rollback_routine",
+                         "list_concepts", "define_concept", "update_model", "propose_hypothesis", "archive_knowledge",
+                         "query_observations", "read_history"]
+
+REFLECT_INSTRUCTIONS_PROGRAM = REFLECT_INSTRUCTIONS.replace(
+    "2. Change what the evidence supports: skills (save_skill / rollback_skill / retire_skill), your routines\n"
+    "   and checks",
+    "2. Change what the evidence supports: your routines and checks (the programs the episode ran)",
+).replace("Every save_skill creates a CANDIDATE version.", "Every write_routine keeps the previous version.")
+
+
 def summarize_episode(store: EpisodeStore, episode_id: str, limit: int = 14000) -> str:
     """Compact text log of an episode for the reflection prompt."""
     lines = []
@@ -52,11 +63,19 @@ def summarize_episode(store: EpisodeStore, episode_id: str, limit: int = 14000) 
         ev = e.get("event")
         if ev == "start":
             lines.append(f"TASK: {e.get('task', '').strip()}")
+        elif ev == "self_check":
+            from agent.explore.checking import autonomous_feedback
+            lines.append(autonomous_feedback(e))
         elif ev == "model" and e.get("text"):
             lines.append(f"[{e['step']}] YOU SAID: {e['text'][:400]}")
         elif ev == "tool":
             r = e.get("result", {})
-            if r.get("ok"):
+            if r.get("ok") and e["name"] == "run_routine" and isinstance(r.get("result"), dict):
+                # 23 Nov audit: a program's result was cut to 300 characters, losing its failure
+                from agent.events import routine_digest
+                res = r["result"]
+                out = f"ok={res.get('ok')} " + routine_digest(res)
+            elif r.get("ok"):
                 res = r.get("result")
                 if isinstance(res, dict):
                     keep = {k: v for k, v in res.items() if k in (
@@ -135,14 +154,16 @@ def history(index_file=INDEX_FILE, last: int = 10, ledger=None, *, claims_only=F
     return sorted(latest.values(), key=lambda r: r["episode"])[-last:]
 
 
-def reflect_executor(main: ActionExecutor, recorder: OutcomeRecorder) -> ActionExecutor:
+def reflect_executor(main: ActionExecutor, recorder: OutcomeRecorder, tools=None) -> ActionExecutor:
     spec = ActionSpec("record_episode_outcome",
                       "Record your claim about the episode: success (the task achieved deliberately, verified by camera), "
                       "blocks_moved (objects the task asked to move, deliberately moved where it wanted them), summary.",
                       recorder.record,
                       _obj({"success": {"type": "boolean"}, "blocks_moved": {"type": "integer", "minimum": 0},
                             "summary": {"type": "string"}}, ["success", "summary"]))
-    specs = [s for s in main.list() if s.name in REFLECT_TOOLS] + [spec]
+    # all_specs: the episode's tool list (program mode) does not contain the review's tools (23 Nov audit)
+    wanted = tools or REFLECT_TOOLS
+    specs = [s for s in getattr(main, "all_specs", {s.name: s for s in main.list()}).values() if s.name in wanted] + [spec]
     return ActionExecutor(specs, mode="live")
 
 

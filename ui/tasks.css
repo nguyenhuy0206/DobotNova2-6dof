@@ -1,0 +1,22 @@
+#page-tasks .task-layout { align-items: start; }
+#page-tasks .stack { min-width: 0; }
+.tasks-frame { background: #132944; border-radius: 10px; overflow: hidden; }
+.tasks-frame canvas { display: block; max-width: 100%; height: auto; cursor: crosshair; }
+.tasks-frame [hidden] { display: none; }
+.tasks-frame .empty-state { color: #c7d7e9; }
+.tasks-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.tasks-readout { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0; }
+.tasks-readout dt { color: #647896; font-size: 10px; }
+.tasks-readout dd { margin: 4px 0 0; font-weight: 750; overflow-wrap: anywhere; }
+.tasks-warning { background: #fff5e8; border: 1px solid #efca91; border-radius: 9px; padding: 12px; color: #865b1b; margin-top: 12px; }
+.tasks-warning ul { padding-left: 18px; margin-bottom: 0; }
+.tasks-error { color: #b54254; }
+.tasks-status { margin-top: 12px; min-height: 18px; overflow-wrap: anywhere; }
+.tasks-slot fieldset { border: 0; padding: 0; margin: 12px 0 0; min-width: 0; }
+.tasks-slot .form-label { color: #647896; }
+.tasks-slot .tasks-actions { align-items: center; }
+.tasks-steps { padding-left: 24px; max-height: 360px; overflow: auto; }
+.tasks-steps li { padding: 7px 4px; overflow-wrap: anywhere; }
+.tasks-steps .chip { margin-right: 8px; }
+.tasks-detail { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+#page-tasks .chip.red { background: #fff0f2; color: #b54254; }

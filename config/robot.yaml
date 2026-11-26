@@ -56,6 +56,9 @@ motion:                  # primitive skills (src/actions/primitives.py)
   arrive_tol_deg: 0.5
   move_timeout_s: 30     # robot is stopped if a move doesn't arrive in time
   home_joints: [0, 0, 90, 0, 90, 0]   # PLACEHOLDER — teach a real 'home' with save_position
+  insert_speed: 5        # % for the insert stroke only (23 Nov, operator: needle insertion, slow; no stall watch)
+  insert_max_mm: 60      # longest insert stroke per call
+  insert_axis: "+z"      # default insert axis in the gripper frame (+z = the way the gripper points)
 
 gripper:                 # DH-Robotics PGC over RS485 (Modbus RTU)
   tool_length_mm: 127.1  # flange -> centre between the fingertips (mm), from touches 18 Nov 2026
@@ -78,16 +81,23 @@ gripper:                 # DH-Robotics PGC over RS485 (Modbus RTU)
 # data/memory/cameras.json and overrides `index` here.
 cameras:
   env:
-    label: "Environment · RealSense D455"
-    source: opencv       # opencv = D455 colour as a webcam (no sudo); realsense = colour + depth (needs pyrealsense2, sudo on macOS)
-    index: 1
-    width: 1280
-    height: 720
+    label: "Front · USB camera (focus)"   # 24 Nov (operator): replaces the D455 (no depth camera any more)
+    source: opencv
+    device: "32e4:9422"  # this camera's USB id (system_profiler SPCameraDataType); index is the fallback
+    index: 2
+    width: 1920
+    height: 1080
     fps: 10
+    max_width: 0
+    jpeg_quality: 90
+  # the D455 before 24 Nov:  label "Environment · RealSense D455", source opencv (colour) / realsense (depth)
   wrist:
     label: "Wrist · USB webcam"
     source: opencv
-    index: 0
-    width: 640
-    height: 480
+    device: "0c45:636b"  # USB id: the index moved 0 -> 1 when the front camera was plugged in (24 Nov)
+    index: 1
+    width: 1920            # 24 Nov (operator): highest mode (was 640x480); 16:9 — the 640x480 wrist calibration
+    height: 1080           #   does not apply to this mode (the threading task does not use it)
     fps: 10
+    max_width: 0           # serve full resolution (the agent zooms into it); the browser view scales it
+    jpeg_quality: 90

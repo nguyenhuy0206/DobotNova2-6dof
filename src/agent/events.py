@@ -103,6 +103,19 @@ class EventRouter:
             else:
                 events.append(Event(EventType.SKILL_FAILED, f"{res.get('skill')}: {str(res.get('failure', ''))[:160]}",
                                     res.get("camera") or "wrist"))
+        elif name == "run_routine" and isinstance(res, dict):
+            # 23 Nov audit: the executor call succeeds even when the program returns ok=false; the program's own
+            # result decides (it was counted as a success: no failure id, no image, the rest of the turn ran)
+            trace = flat_trace(res.get("trace") or [])
+            contact = next((e for e in trace if "CONTACT" in str(e.get("error", ""))), None)
+            if contact:
+                events.append(Event(EventType.CONTACT, str(contact.get("error"))[:160], "wrist"))
+            elif res.get("ok") is False:
+                bad = next((e for e in trace if not e.get("ok")), None)
+                why = res.get("detail") or res.get("error") or (bad or {}).get("error") or ""
+                events.append(Event(EventType.SKILL_FAILED, f"{args.get('name')}: {str(why)[:160]}", "wrist"))
+            else:
+                events.append(Event(EventType.SKILL_OK, str(args.get("name", ""))))
         elif name == "look" and isinstance(res, dict):
             events += self._look_events(args, res)
         if not events:
@@ -164,6 +177,40 @@ def objects_digest(objects: list, per_color: int = 3) -> str:
     return ";".join(parts)
 
 
+def flat_trace(trace: list) -> list:
+    """A program trace with nested routine/check traces expanded in place."""
+    out = []
+    for e in trace:
+        if not isinstance(e, dict):
+            continue
+        out.append(e)
+        if isinstance(e.get("trace"), list):
+            out += flat_trace(e["trace"])
+    return out
+
+
+def routine_digest(res: dict) -> str:
+    """run_routine in one line: outcome, the first failed primitive, measured depth points, the last pose."""
+    trace = flat_trace(res.get("trace") or [])
+    bits = [f"steps={len(trace)}"]
+    if res.get("detail"):
+        bits.append("detail=" + str(res["detail"])[:120])
+    bad = next((e for e in trace if not e.get("ok")), None)
+    if bad:
+        bits.append(f"first_error=#{bad.get('i')} {bad.get('tool')}: {str(bad.get('error', ''))[:120]}")
+    pts = [p for e in trace if e.get("tool") == "depth_at" for p in e.get("points", [])]
+    if pts:
+        shown = []
+        for p in pts[:8]:
+            xyz = p.get("base_xyz_mm") or p.get("at_plane_xyz_mm")
+            shown.append(f"{tuple(p.get('pixel') or [])}->" + ("(" + ",".join(f"{v:.0f}" for v in xyz) + ")" if xyz else "none"))
+        bits.append("measured " + " ".join(shown) + (f" (+{len(pts) - 8})" if len(pts) > 8 else ""))
+    last = next((e for e in reversed(trace) if e.get("pose")), None)
+    if last:
+        bits.append("last_tip=" + ",".join(f"{v:.0f}" for v in last["pose"][:3]))
+    return " ".join(bits)
+
+
 def digest_line(step: int, name: str, args: dict, result: dict, events: list[Event]) -> str:
     """Deterministic one-line summary of an action (no LLM)."""
     res = result.get("result")
@@ -180,6 +227,23 @@ def digest_line(step: int, name: str, args: dict, result: dict, events: list[Eve
                 bits.append(f"{k}={str(res[k])[:60]}")
         if "objects" in res:
             bits.append("objs=" + objects_digest(res["objects"]))
+        if name == "depth_at" and res.get("points"):
+            # 23 Nov 142507: the digest said only "ok" for depth_at, so after one turn the measured coordinates
+            # were gone and the agent measured the same four cubes ~12 times
+            pts = []
+            for p in res["points"][:10]:
+                xyz = p.get("base_xyz_mm") or p.get("at_plane_xyz_mm")
+                pts.append(f"{tuple(p.get('pixel') or [])}->" + ("(" + ",".join(f"{v:.0f}" for v in xyz) + ")" if xyz else "none"))
+            bits.append("measured " + " ".join(pts))
+        if name == "run_routine":
+            bits.append(routine_digest(res))
+        elif name == "write_routine" and res.get("params") is not None:
+            bits.append("params=" + ",".join(map(str, res["params"])))
+        elif name == "read_routine":
+            bits.append(f"read {res.get('name')} ({len(str(res.get('code', '')))} chars)")
+        elif name == "look":
+            bits.append(f"picture {res.get('camera')}" + (f" zoom scale {res['picture_scale']}"
+                                                          if res.get("picture_scale") not in (None, 1, 1.0) else ""))
         out = " ".join(bits) or "ok"
     else:
         out = str(res)[:80]

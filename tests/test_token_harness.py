@@ -287,7 +287,7 @@ class MoveRecorder:
     def __init__(self, cam):
         self.cam, self.moves = cam, []
 
-    def execute(self, name, args):
+    def execute(self, name, args, **_):
         self.moves.append(args)
         self.cam.u += self.cam.sign * 5.6 * args.get("dy", 0)
         self.cam.v += self.cam.sign * -2.6 * args.get("dx", 0)
@@ -388,7 +388,7 @@ def test_wrist_search_finds_a_cube_beyond_the_image_top():
     class Ex:
         mode = "live"
 
-        def execute(self, name, args):
+        def execute(self, name, args, **_):
             cam.dx += args.get("dx", 0)
             return {"ok": True, "result": {}}
     out = LocalSteps(None, cam, Ex(), settle_s=0, frame_retries=1).routine("wrist_search", {}, color="green")
@@ -401,7 +401,7 @@ def test_wrist_search_returns_to_start_when_not_found():
     class Ex:
         mode = "live"
 
-        def execute(self, name, args):
+        def execute(self, name, args, **_):
             moves.append((args.get("dx", 0), args.get("dy", 0)))
             return {"ok": True, "result": {}}
 
@@ -420,7 +420,7 @@ def test_probe_top_measures_the_cube_by_contact():
     class Ex:
         mode = "live"
 
-        def execute(self, name, args):
+        def execute(self, name, args, **_):
             calls.append((name, args))
             if name == "move_relative" and len([c for c in calls if c[0] == "move_relative"]) == 3:
                 return {"ok": False, "error": "move_relative: CONTACT at fingertip Z=71.4 (X=-1, Y=-2) — something"}
@@ -440,7 +440,7 @@ def test_probe_without_contact_fails():
     class Ex:
         mode = "live"
 
-        def execute(self, name, args):
+        def execute(self, name, args, **_):
             return {"ok": True, "result": {}}
 
     class P:
@@ -493,7 +493,7 @@ class ReachLimit:
     def __init__(self):
         self.pose = [-358.0, -502.0, 150.0]
 
-    def execute(self, name, args):
+    def execute(self, name, args, **_):
         x, y, z = self.pose
         nx, ny, nz = x + args.get("dx", 0), y + args.get("dy", 0), z + args.get("dz", 0)
         if nz > 160 and (nx ** 2 + ny ** 2) ** 0.5 > 600:
@@ -557,3 +557,23 @@ def test_free_chunks_run_the_whole_plan_but_options_cap_stays_without_it():
     run, deferred, _ = strict.split(plan, tip_z=150, zone_top=120, grip=1000)
     assert len(run) < 5 and deferred                        # the old policy still splits
     assert HarnessOptions.from_variant("V3", max_horizon=9).chunk.max_horizon == 4
+
+
+def test_pictures_are_labelled_and_the_full_env_picture_stays(tmp_path):
+    """23 Nov 154154: a zoom must not hide the scene (full <-> zoom 40 times)."""
+    from mock_world import build
+    plan = [("look", {"camera": "env"}), ("look", {"camera": "env", "zoom": [100, 100, 200, 150]}),
+            ("get_state", {})]
+    h, client, sim = build("V3", tmp_path, plan=plan, object_at=None)
+    client.chunk = 1                                   # one call per turn
+    h.run("x")
+
+    def texts(req):
+        return [c.get("text", "") for m in req["raw"] if isinstance(m, dict)
+                for c in (m.get("content") if isinstance(m.get("content"), list) else [])
+                if c.get("type") == "input_text"]
+    after_zoom = [t for t in texts(client.requests[2]) if t.startswith("Picture:")]
+    assert any("full image" in t and "kept from earlier" in t for t in after_zoom)
+    assert any("zoom of the full image, region x=100 y=100" in t for t in after_zoom)
+    later = [t for t in texts(client.requests[3]) if t.startswith("Picture:")]
+    assert len(later) == 1 and "full image" in later[0]

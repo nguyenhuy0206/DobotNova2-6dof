@@ -61,7 +61,9 @@ class SceneObject:
 class UIFrameSource:
     """Colour frames from the UI server's camera hub (no depth)."""
 
-    def __init__(self, ui_url: str, name: str, timeout: float = 2.0):
+    # 24 Nov: 2 s timed out when the dashboard had closed an idle camera and reopened it at 1920x1080 (the
+    # self-check after episode 140926 had no front picture); the dashboard waits up to 5 s for a fresh frame
+    def __init__(self, ui_url: str, name: str, timeout: float = 8.0):
         self.url, self.timeout = f"{ui_url.rstrip('/')}/api/cameras/{name}/frame.jpg", timeout
 
     def read(self) -> Frame:
@@ -92,6 +94,9 @@ class Scene:
         # (coloured tape on the arm/wrist camera), not things on the table. None = off.
         self.object_z_max: float | None = None
         self.last_frames: dict = {}                    # camera -> (frame, time) of the last look
+        # camera -> (x0, y0, scale) of the picture last SHOWN: depth_at reads pixels in that picture's coordinates
+        # (23 Nov 140334: pixels read off a zoomed picture were taken as full-image pixels -> x -3743 mm, z 758)
+        self.last_views: dict = {}
         self.wrist_overlay = None                      # perception.wrist_overlay.WristOverlay (fingertips in the wrist picture)
         self.sources = sources                       # camera name -> object with read() -> Frame
         self.env_calibration = env_calibration       # None = not calibrated yet
@@ -100,14 +105,19 @@ class Scene:
     @classmethod
     def from_config(cls, cfg: PerceptionConfig | None = None, cameras=("env", "wrist"), workspace=None) -> "Scene":
         cfg = cfg or load_perception_config()
+        # 24 Nov: "env" is the D455 (depth helper, calibrated) only when the dashboard camera says realsense;
+        # otherwise it is a plain colour camera served by the dashboard (no depth, no robot calibration)
+        env_depth = _env_is_depth()
         sources = {}
         for name in cameras:
-            if name == "env":
+            if name == "env" and env_depth:
                 sources[name] = _LazyHelper(cfg.env_helper_url)
             else:
                 sources[name] = UIFrameSource(cfg.ui_url, name)
-        calib = HandEye.load(cfg.calibration_path) if cfg.calibration_path.exists() else None
-        return cls(cfg, sources, calib, workspace)
+        calib = HandEye.load(cfg.calibration_path) if env_depth and cfg.calibration_path.exists() else None
+        scene = cls(cfg, sources, calib, workspace)
+        scene.env_depth = env_depth and "env" in sources
+        return scene
 
     @property
     def colors(self) -> list[str]:
@@ -214,14 +224,21 @@ class Scene:
             zw, zh = max(8, min(zw, w - x)), max(8, min(zh, h - y))
             result["zoom"] = [x, y, zw, zh]
             result["image_jpeg_b64"] = self.encode_image(picture[y:y + zh, x:x + zw], [], upscale=True)
+            scale = self.cfg.image_max_width / zw    # enlarged when narrower, downsized when wider (encode_image)
+            result["picture_scale"] = round(scale, 4)
+            result["picture_size"] = [round(zw * scale), round(zh * scale)]
+            self.last_views[camera] = (x, y, scale)
         else:
             result["image_jpeg_b64"] = self.encode_image(picture, [])
+            result["picture_size"] = _shown_size(w, h, self.cfg.image_max_width)
+            self.last_views[camera] = (0, 0, min(1.0, self.cfg.image_max_width / w))
         return result
 
     def depth_at(self, pixels: list, window_px: int = 2, plane_z: float | None = None) -> dict:
-        """Depth of the env camera at the given pixels of the LAST env look (same frame as that picture):
-        per pixel the median of the valid depth in a (2*window_px+1)^2 window, the 3D point in the camera
-        frame and, when calibrated, in the robot base frame. No detection, no filtering."""
+        """Depth of the env camera at the given pixels of the LAST env look (same frame as that picture), in the
+        coordinates of that picture as it was shown (zoomed or full): per pixel the median of the valid depth in a
+        (2*window_px+1)^2 window, the 3D point in the camera frame and, when calibrated, in the robot base frame.
+        No detection, no filtering."""
         if "env" not in self.last_frames:
             raise ValueError("look at the env camera first: depth_at answers for the pixels of that picture")
         frame, at = self.last_frames["env"]
@@ -231,6 +248,8 @@ class Scene:
             raise ValueError("pixels: a list of 1–50 [u, v] pairs in full-image coordinates")
         h, w = frame.depth_m.shape[:2]
         k, n = frame.intrinsics, max(0, min(int(window_px), 10))
+        # 23 Nov 154154: pixels relative to "the last picture shown" flipped meaning with every zoom (the agent
+        # gave full-image pixels after a zoom and measured the table). One rule now: full-image pixels.
         out = []
         for p in pixels:
             u, v = int(round(float(p[0]))), int(round(float(p[1])))
@@ -254,17 +273,20 @@ class Scene:
                 if self.env_calibration is not None:
                     row["base_xyz_mm"] = [round(float(c), 1) for c in self.env_calibration.camera_to_base(cam).tolist()]
             out.append(row)
-        # the same picture with the asked pixels numbered: in a bounded context the look image is gone by the
-        # time the depths arrive (20 Nov 164149: look -> depth_at -> look again, same pixels, 3x)
-        import cv2
-        img = frame.color.copy()
-        for i, row in enumerate(out):
-            u, v = row["pixel"]
-            if 0 <= u < w and 0 <= v < h:
-                cv2.drawMarker(img, (u, v), (255, 0, 255), cv2.MARKER_CROSS, 12, 1)
-                cv2.putText(img, str(i), (u + 4, v - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+        # 23 Nov (operator): raw pictures only — depth_at is a measuring tool, numbers only, no marked picture;
         return {"camera": "env", "frame": frame.sequence_id, "picture_age_s": round(time.time() - at, 1),
-                "points": out, "image_jpeg_b64": self.encode_image(img, [])}
+                "image_size": [w, h], "points": out}
+
+    def locate_object(self, pixel, table_z: float | None = None, **kwargs) -> dict:
+        """Height geometry at full-image pixels of the last env look; numbers only."""
+        from perception.locate import locate_object
+        if "env" not in self.last_frames:
+            return {"ok": False, "error": "look at the env camera first"}
+        frame, at = self.last_frames["env"]
+        out = locate_object(frame, self.env_calibration, pixel, table_z,
+                            workspace=self.workspace, **kwargs)
+        return {**out, "camera": "env", "frame": frame.sequence_id,
+                "picture_age_s": round(time.time() - at, 1)}
 
     def find_report(self, color: str, camera: str = "env") -> dict:
         """Tool-friendly result: current detections + last sighting when hidden."""
@@ -293,6 +315,22 @@ class Scene:
             s = self.cfg.image_max_width / img.shape[1]
             img = cv2.resize(img, (self.cfg.image_max_width, int(img.shape[0] * s)))
         return base64.b64encode(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])[1]).decode()
+
+
+def _shown_size(w: int, h: int, max_w: int) -> list[int]:
+    """Size of a full picture as attached (downsized to max_w wide when larger)."""
+    s = min(1.0, max_w / w)
+    return [round(w * s), round(h * s)]
+
+
+def _env_is_depth() -> bool:
+    """Is the dashboard's env camera the D455 (config/robot.yaml cameras.env: realsense, or no device id)?"""
+    try:
+        from common.config import load_robot_config
+        env = load_robot_config().cameras.get("env")
+    except Exception:  # noqa: BLE001 — no config: the old default (D455)
+        return True
+    return env is None or env.source == "realsense" or not getattr(env, "device", "")
 
 
 class _LazyHelper:

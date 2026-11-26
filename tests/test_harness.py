@@ -225,3 +225,51 @@ def test_harness_ends_the_episode_on_the_third_identical_action(tmp_path):
                      SkillLibrary(tmp_path / "s.json"), options=opts, state_fn=lambda: {"pose": [0, 0, 300]})
     out = h.run("open")
     assert len(moves) == 3 and out.startswith("Stopped: the same action 3× in a row: open_gripper")
+
+
+def test_depth_measurements_stay_in_the_episode_digest():
+    """23 Nov 142507: depth_at was summarized as 'ok', the coordinates were lost after one turn and the agent
+    measured the same cubes again ~12 times."""
+    from agent.context import WorkingMemory
+    from agent.events import digest_line
+    r = {"ok": True, "result": {"points": [{"pixel": [384, 333], "base_xyz_mm": [-251.7, -386.9, 65.1]},
+                                           {"pixel": [10, 10], "valid_fraction": 0.0}]}}
+    line = digest_line(3, "depth_at", {"pixels": [[384, 333], [10, 10]]}, r, [])
+    assert "(384, 333)->(-252,-387,65)" in line and "(10, 10)->none" in line
+    wm = WorkingMemory("task")
+    wm.record_turn(3, "", [], [], "", [line])
+    assert wm.digest[0][0]                                   # a milestone: kept when the digest is trimmed
+
+
+def test_a_stop_is_verified_and_sent_back_until_a_check_passes(tmp_path):
+    """24 Nov (operator): no early stop — a text-only answer goes to keep_going; its message continues the
+    episode, None ends it."""
+    from actions.executor import ActionSpec
+    from agent.harness import HarnessOptions
+
+    ex = ActionExecutor([ActionSpec("get_state", "", lambda: {"pose": [0] * 6}, read_only=True)], mode="live")
+    script = [NS(id="r1", output=[], output_text="cannot confirm"),
+              NS(id="r2", output=[call("get_state", {}, "c2")], output_text=""),
+              NS(id="r3", output=[], output_text="threaded")]
+    asked = []
+    for variant in ("V3", "V0"):
+        h = AgentHarness(FakeClient(script), ex, AgentConfig(max_steps=10),
+                         EpisodeStore(tmp_path / variant), SkillLibrary(tmp_path / "s.json"),
+                         options=HarnessOptions.from_variant(variant), state_fn=lambda: {"pose": [0, 0, 300]})
+        h.keep_going = lambda ep, text: asked.append(text) or (None if text == "threaded" else "NOT FINISHED")
+        assert h.run("thread") == "threaded"
+        sent = json.dumps(h.client.calls[1], default=str)
+        assert "NOT FINISHED" in sent
+        assert [e["event"] for e in h.episodes.load(h.last_episode)].count("keep_going") == 1
+    assert asked == ["cannot confirm", "threaded"] * 2
+
+
+def test_keep_going_is_not_asked_on_the_last_call(tmp_path):
+    from actions.executor import ActionSpec
+    from agent.harness import HarnessOptions
+    ex = ActionExecutor([ActionSpec("get_state", "", lambda: {}, read_only=True)], mode="live")
+    h = AgentHarness(FakeClient([NS(id="r1", output=[], output_text="stop")]), ex, AgentConfig(max_steps=1),
+                     EpisodeStore(tmp_path / "ep"), SkillLibrary(tmp_path / "s.json"),
+                     options=HarnessOptions.from_variant("V3"), state_fn=lambda: {})
+    h.keep_going = lambda ep, text: "NOT FINISHED"
+    assert h.run("x") == "stop"

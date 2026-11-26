@@ -254,7 +254,8 @@ def test_partial_ledger_is_not_repaired_or_overwritten(spec, tmp_path):
 
 def test_spec_strict_and_default_unconfigured(tmp_path):
     default = load_spec()
-    assert not default.destination and not default.calibration_hash and not default.validated_predicates
+    # 23 Nov: the operator drew the destination (white box top); credit stays off until the verifier is qualified
+    assert not default.calibration_hash and not default.validated_predicates
     raw = json.loads(DEFAULT_SPEC.read_text())
     raw["required_sequence"] = []
     path = tmp_path / "spec.json"

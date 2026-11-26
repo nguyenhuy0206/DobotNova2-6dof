@@ -63,8 +63,19 @@ FREE_CHUNK_HINT = (
 )
 BOUNDED_HINT = (
     "\n\nCONTEXT: every request is self-contained: TASK, STATE measured by the harness, a digest of the "
-    "episode so far, your last turns and the results of your last calls. Earlier images are not "
-    "repeated; look again to see the scene now."
+    "episode so far, your last turns and the results of your last calls, with the pictures of your last "
+    "calls. Each picture has a label (camera, full image or zoom region, step it was taken); the newest "
+    "full picture of each camera (env, wrist) is repeated in every request until a newer one replaces it "
+    "(its step says how old it is; the wrist picture moves with the arm). Other earlier pictures are not "
+    "repeated."
+)
+
+
+BOUNDED_HINT_NO_REPEAT = (
+    "\n\nCONTEXT: every request is self-contained: TASK, STATE measured by the harness, a digest of the "
+    "episode so far, your last turns and the results of your last calls, with the pictures your last calls "
+    "returned. Each picture has a label (camera, full image or zoom region, step it was taken). Earlier "
+    "pictures are not repeated."
 )
 
 
@@ -105,6 +116,7 @@ class HarnessOptions:
     max_episode_tokens: int = 0        # 0 = no cap; else stop the episode when reached
     max_repeats: int = 0               # same action / hypothesis this many times in a row -> stop (0 = off)
     post_lift_image: bool = False      # record a wrist image once per grasp after lifting (log/review only)
+    repeat_pictures: bool = True       # the newest full picture of each camera goes with every request
 
     @classmethod
     def from_variant(cls, variant: str = "V0", **cfg) -> "HarnessOptions":
@@ -125,7 +137,8 @@ class HarnessOptions:
                                       wrist_detail=cfg.get("wrist_image_detail", "high")),
                    max_episode_tokens=int(cfg.get("max_episode_tokens", 0) or 0),
                    max_repeats=int(cfg.get("max_repeats", 0) or 0),
-                   post_lift_image=bool(cfg.get("post_lift_image", False)))
+                   post_lift_image=bool(cfg.get("post_lift_image", False)),
+                   repeat_pictures=bool(cfg.get("repeat_pictures", True)))
 
 
 class AgentHarness:
@@ -151,6 +164,10 @@ class AgentHarness:
         self.state_fn = state_fn        # () -> compact measured state for the bounded context
         self.skill_runner = skill_runner
         self.investigation = investigation   # agent.explore.diagnosis.Investigation: failures -> hypotheses -> tests
+        # 24 Nov (operator): "keep trying until the calls or tokens run out". keep_going(episode, text) is asked when
+        # the model answers without a tool call: a message (verification result + "continue") goes back as the
+        # next request; None lets the episode finish (e.g. verified success).
+        self.keep_going = None
         self.last_episode: str | None = None
         self.last_metrics: dict | None = None
         self.last_turn: dict = {}
@@ -172,14 +189,18 @@ class AgentHarness:
         text = self.config.system_prompt or DEFAULT_INSTRUCTIONS
         # Procedures and operator status only; execution claims are not verified outcomes.
         # descriptions are written experience and stay out of the prompt (list_skills NAME shows them)
-        index = self.skills.index() if hasattr(self.skills, "index") else []
+        offered = getattr(self.executor, "specs", {})
+        # 23 Nov audit: program mode offers no skill tools, the library listing pointed at tools that do not exist
+        index = self.skills.index() if hasattr(self.skills, "index") and (not offered or "list_skills" in offered) else []
         if index:
             text += ("\n\nYour skill library (list_skills NAME shows its steps):\n" + "\n".join(
                          f"- {s['name']} v{s['version']} [{s['status']}] · "
                          f"params {', '.join(s['params'])}" for s in index))
-        if self.notes:
+        if self.notes and getattr(self, "show_notes", True):
             lessons = (self.notes.digest() if self.options.context.mode == "bounded" and hasattr(self.notes, "digest")
                        else self.notes.recent_text())
+            if lessons and offered and "list_concepts" not in offered:
+                lessons = lessons.replace(" (list_concepts)", " (not shown)")
             if lessons:
                 header = getattr(self.notes, "prompt_header",
                                  "Your notes from earlier runs (facts you measured; re-check if they look wrong):")
@@ -189,7 +210,7 @@ class AgentHarness:
         elif self.options.chunk.enabled:
             text += CHUNK_HINT.format(L=self.options.chunk.max_horizon)
         if self.options.context.mode == "bounded":
-            text += BOUNDED_HINT
+            text += BOUNDED_HINT if self.options.repeat_pictures else BOUNDED_HINT_NO_REPEAT
         return text
 
     def _moves(self, name: str) -> bool:
@@ -304,6 +325,9 @@ class AgentHarness:
         self.last_episode = episode
         self.last_metrics = None
         self._episode_metrics = EpisodeMetrics(variant=opt.variant)
+        self.executor.stopped = None        # the operator cleared and resumed the robot between episodes
+        self.executor.looks_since_motion = 0
+        self.executor.episode_state = {}
         if self.judge is not None:
             self.judge.start(episode)
             self._judge_started = True
@@ -338,8 +362,35 @@ class AgentHarness:
             return part
 
         start_images = [image_part(i, None) for i in images or []]
+        # 23 Nov 154154: with only the newest picture in each request the agent alternated full look <-> zoom
+        # 40 times (a zoom hides the scene, the full picture hides the detail). The newest FULL env picture
+        # stays in every request until a newer one replaces it; every picture comes with a label.
+        standing: dict = {}                 # camera -> (image, label) of its newest full picture
+        cam_use = {"wrist": 0, "env (look + depth_at)": 0}
+        FULL_TAG = " camera, full image,"   # (a zoom label says "zoom of the full image")
+
+        def label_for(step_no: int, camera, res: dict, auto: bool = False) -> str:
+            if res.get("picture_label"):
+                return f"{res['picture_label']}, taken at step {step_no}"
+            z = res.get("zoom")
+            what = (f"zoom of the full image, region x={z[0]} y={z[1]} w={z[2]} h={z[3]}, enlarged "
+                    f"{res.get('picture_scale')}x" if z else "full image")
+            return f"Picture: {camera} camera, {what}, taken at step {step_no}" + (" by the harness" if auto else "")
+
+        def with_labels(items: list) -> list:
+            parts, full_now = [], {cam for _, cam, lab in items if FULL_TAG in lab}
+            for cam, (img, lab) in (standing.items() if opt.repeat_pictures else ()):
+                if cam not in full_now:
+                    parts += [{"type": "input_text", "text": lab + " (kept from earlier)"}, image_part(img, cam)]
+            for img, cam, lab in items:
+                parts += [{"type": "input_text", "text": lab}, image_part(img, cam)]
+            return parts
         if bounded:
             st0 = self._state()
+            if isinstance(st0, dict) or st0 is None:
+                st0 = {**(st0 or {}), "budget": {"this_request": f"model call 1 of {self.config.max_steps}",
+                                                 **({"tokens": f"0 of {opt.max_episode_tokens:,}"}
+                                                    if opt.max_episode_tokens else {})}}
             self.episodes.append(episode, {"event": "state", "step": 0, "state": st0})
             first = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(st0)},
                                                   *start_images]}]
@@ -356,8 +407,28 @@ class AgentHarness:
                                            "text": response.output_text, "calls": len(calls),
                                            **({"reasoning": r} if (r := reasoning_summary(response)) else {})})
             if not calls:
-                reason, final = "done", response.output_text
-                break
+                over = opt.max_episode_tokens and metrics.tokens_so_far() >= opt.max_episode_tokens
+                nudge = (self.keep_going(episode, response.output_text)
+                         if self.keep_going and step + 1 < self.config.max_steps and not over else None)
+                if nudge is None:
+                    reason, final = "done", response.output_text
+                    break
+                self.episodes.append(episode, {"event": "keep_going", "step": step, "text": nudge})
+                if bounded:
+                    wm.record_turn(step, response.output_text, [], [], "", [])
+                    st = self._state()
+                    budget = {"this_request": f"model call {step + 2} of {self.config.max_steps}"}
+                    if opt.max_episode_tokens:
+                        budget["tokens"] = f"{metrics.tokens_so_far():,} of {opt.max_episode_tokens:,}"
+                    st = {**(st or {}), "budget": budget} if isinstance(st, dict) or st is None else st
+                    msg = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(st, nudge)}]}]
+                    response = self._create(episode, step + 1, metrics, 0, input=msg, tools=tools,
+                                            instructions=instructions)
+                else:
+                    response = self._create(episode, step + 1, metrics, 0, input=[
+                        {"role": "user", "content": [{"type": "input_text", "text": nudge}]}], tools=tools,
+                        previous_response_id=response.id, instructions=instructions)
+                continue
             metrics.tool_calls += len(calls)
 
             parsed = []
@@ -417,7 +488,8 @@ class AgentHarness:
                     send, img_reason = images_policy.decide(call.parsed_args)
                     if send:
                         router.image_delivered(camera)
-                        sent_images.append((image, camera))
+                        lab = label_for(step, camera, result.get("result") or {})
+                        sent_images.append((image, camera, lab))
                     else:
                         metrics.images_withheld += 1
                     result["result"]["image"] = ("attached" if send else "not attached") + f" ({img_reason})"
@@ -429,7 +501,8 @@ class AgentHarness:
                 digests.append(digest_line(step, call.name, call.parsed_args, result, events))
                 outputs.append({"type": "function_call_output", "call_id": call.call_id,
                                 "output": json.dumps(result, ensure_ascii=False, default=str)})
-                robot_stopped = robot_stopped or motion_stopped(result)
+                robot_stopped = robot_stopped or motion_stopped(result) or (
+                    getattr(self.executor, "stopped", None) and str(self.executor.stopped)[:200])
                 if (opt.chunk.enabled and aborts_chunk(events)) or repeat_stop or robot_stopped:
                     aborted = True
             self.last_turn = {"executed": len(executed), "deferred": len(deferred), "reason": why}
@@ -462,34 +535,49 @@ class AgentHarness:
             if bounded and self.send_images and "look" in self.executor.specs:
                 for camera in sorted(router.pending_image):
                     colors = [router.handling] if router.handling else None
-                    r = self.executor.execute("look", {"camera": camera})
+                    r = self.executor.execute("look", {"camera": camera}, internal=True)   # not the agent's own look
                     img = self._take_image(episode, step, f"auto-look-{camera}", r)
                     router.classify("look", {"camera": camera, "colors": colors or []}, r)
                     router.image_delivered(camera)
                     self.episodes.append(episode, {"event": "tool", "step": step, "name": "look", "auto": True,
                                                    "args": {"camera": camera, "colors": colors}, "result": r})
                     if img is not None:
-                        sent_images.append((img, camera))
+                        sent_images.append((img, camera, label_for(step, camera, r.get("result") or {}, auto=True)))
                         r["result"]["image"] = "attached (taken by the harness after the unexpected event)"
                     auto.append((f"look[auto:{camera}]", {"camera": camera}, r))
                 metrics.auto_looks += len(auto)
 
-            img_parts = [image_part(img, cam) for img, cam in sent_images]
+            img_parts = with_labels(sent_images) if bounded else [image_part(img, cam) for img, cam, _ in sent_images]
+            for img, cam, lab in sent_images:
+                if cam in ("env", "wrist") and FULL_TAG in lab:
+                    standing[cam] = (img, lab)
             if bounded:
                 wm.record_turn(step, response.output_text, executed + auto, deferred, why, digests)
                 extra = ""
                 st = self._state()
+                # 23 Nov: the agent re-checked the same coordinates until the budget ran out without knowing it
+                # was running out — the budget used so far is a measured fact, like the pose
+                budget = {"this_request": f"model call {step + 2} of {self.config.max_steps}"}
+                for n, a, _ in executed:                    # the agent's own camera calls (auto looks excluded)
+                    if n == "look":
+                        cam_use["wrist" if a.get("camera") == "wrist" else "env (look + depth_at)"] += 1
+                    elif n == "depth_at":
+                        cam_use["env (look + depth_at)"] += 1
+                if opt.max_episode_tokens:
+                    budget["tokens"] = f"{metrics.tokens_so_far():,} of {opt.max_episode_tokens:,}"
+                st = {**(st or {}), "budget": budget, "camera_use": dict(cam_use)} \
+                    if isinstance(st, dict) or st is None else st
                 self.episodes.append(episode, {"event": "state", "step": step + 1, "state": st})
                 msg = [{"role": "user", "content": [{"type": "input_text", "text": wm.build(st, extra)},
                                                     *img_parts]}]
-                response = self._create(episode, step + 1, metrics, len(img_parts), input=msg, tools=tools,
+                response = self._create(episode, step + 1, metrics, sum(p.get("type") == "input_image" for p in img_parts), input=msg, tools=tools,
                                         instructions=instructions)
             else:
                 if img_parts:
                     # Images go in a user message right after the tool outputs.
                     outputs.append({"role": "user", "content": [
                         {"type": "input_text", "text": "Camera image(s) from the tool call(s) above:"}, *img_parts]})
-                response = self._create(episode, step + 1, metrics, len(img_parts), input=outputs, tools=tools,
+                response = self._create(episode, step + 1, metrics, sum(p.get("type") == "input_image" for p in img_parts), input=outputs, tools=tools,
                                         previous_response_id=response.id, instructions=instructions)
 
         if final is None:

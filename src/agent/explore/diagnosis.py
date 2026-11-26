@@ -72,7 +72,7 @@ class Investigation:
         res = result.get("result") if isinstance(result.get("result"), dict) else {}
         missed = name == "close_gripper" and result.get("ok") and res.get("holding") is False
         dropped = res.get("failure") == "gripper_reported_drop"   # set by the harness (held before, dropped after)
-        failed = (not result.get("ok")) or (name == "run_skill" and res.get("ok") is False) \
+        failed = (not result.get("ok")) or (name in ("run_skill", "run_routine") and res.get("ok") is False) \
             or missed or dropped
         if not failed:
             return None
@@ -83,7 +83,7 @@ class Investigation:
         detail = res.get("detail") or result.get("error") or res.get("advice") or (
             f"closed to position {res.get('position')} without holding anything" if missed else "")
         f = {"id": f"F{len(self.failures) + 1}", "action": name,
-             "what": (args.get("name") if name == "run_skill" else name), "code": code,
+             "what": (args.get("name") if name in ("run_skill", "run_routine") else name), "code": code,
              "detail": str(detail)[:200], "diagnosed": False}
         self.failures.append(f)
         same = sum(1 for x in self.failures if not x["diagnosed"] and (x["what"], x["code"]) == (f["what"], code))

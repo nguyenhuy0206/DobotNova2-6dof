@@ -21,7 +21,10 @@ from __future__ import annotations
 import math
 import re
 
-from common.errors import RobotError
+from common.errors import RobotError, ValidationError
+
+NO_DETECTION = ("colour detection is not available: the operator gives Astra the raw pictures only "
+                "(look / depth_at)")
 
 
 class LocalSteps:
@@ -37,6 +40,8 @@ class LocalSteps:
         # The wrist frame comes from the UI stream and can lag a motion by a few hundred
         # ms: wait before reading it, and re-read a few frames before saying "not seen".
         self.settle_s, self.frame_retries = settle_s, frame_retries
+        # 23 Nov (operator): program mode gives Astra raw pictures only — no core step may detect colours for it
+        self.colour_detection = True
 
     # ------------------------------------------------------------------ helpers
     def _tip(self) -> list[float]:
@@ -46,9 +51,11 @@ class LocalSteps:
         return self.executor is not None and self.executor.mode == "dry_run"
 
     def _move(self, **args) -> dict:
-        return self.executor.execute("move_relative", {"frame": "base", **args})
+        return self.executor.execute("move_relative", {"frame": "base", **args}, internal=True)
 
     def _wrist(self, color: str, min_area: float = 0) -> list[dict]:
+        if not self.colour_detection:
+            raise ValidationError(NO_DETECTION)
         import time
         objs: list[dict] = []
         for i in range(max(1, self.frame_retries)):
@@ -60,6 +67,8 @@ class LocalSteps:
         return objs
 
     def _env(self, color: str) -> list[dict]:
+        if not self.colour_detection:
+            raise ValidationError(NO_DETECTION)
         return [o.summary() for o in self.scene.find(color, "env")]
 
     @staticmethod
@@ -73,6 +82,8 @@ class LocalSteps:
         fn = getattr(self, f"check_{name}", None)
         if own is None and fn is None:
             raise ValueError(f"unknown check '{name}' (known: {sorted(self.known('check'))})")
+        if own is None and not self.colour_detection and f"check:{name}" in COLOUR_STEPS:
+            raise ValueError(f"core check '{name}' uses colour detection — {NO_DETECTION}")
         if self._dry() and not (own and own["dry_run"]):
             return {"ok": True, "detail": f"dry_run: {name} not evaluated"}
         try:
@@ -168,6 +179,8 @@ class LocalSteps:
     def routine(self, name: str, memo: dict, **args) -> dict:
         if self.code is not None and self.code.get("routine", name) is not None:
             return self.code.call(self, "routine", name, memo, args)      # Astra's version wins
+        if not self.colour_detection and f"routine:{name}" in COLOUR_STEPS:
+            raise ValueError(f"core routine '{name}' uses colour detection — {NO_DETECTION}")
         fn = getattr(self, f"routine_{name}", None)
         if fn is None:
             raise ValueError(f"unknown routine '{name}' (known: {sorted(self.known('routine'))})")
@@ -183,6 +196,8 @@ class LocalSteps:
     DETOUR_MM, MAX_DETOURS = 15.0, 3
 
     def _vertical(self, z: float, step_mm: float, speed: int | None, sign: int) -> dict:
+        if not step_mm > 0:
+            return {"ok": False, "detail": f"step_mm must be > 0 (got {step_mm})", "moves": 0}
         start = self._tip()[2]
         cur, moves, detours = start, 0, 0
         while (cur - z) * sign < -0.5 and moves < 40:
@@ -203,6 +218,9 @@ class LocalSteps:
                         **({"detours": detours} if detours else {})}
             pose = (r.get("result") or {}).get("pose") if isinstance(r.get("result"), dict) else None
             cur = pose[2] if pose else cur + dz                # dry_run: planned z
+        if (cur - z) * sign < -0.5:      # 23 Nov audit: 40 steps used up short of z was reported as ok
+            return {"ok": False, "z": round(cur, 1), "moves": moves,
+                    "detail": f"stopped after {moves} steps at z={cur:.1f}, short of z={z:.1f}"}
         return {"ok": True, "z": round(cur, 1), "moves": moves,
                 **({"detours": detours, "detail": f"moved {detours * self.DETOUR_MM:.0f} mm towards the base "
                     "to stay in reach while lifting"} if detours else {})}
@@ -246,15 +264,15 @@ class LocalSteps:
                           speed: int | None = 1, grip: int = 500) -> dict:
         """Measure the cube top by touch: fingers half closed (narrower than the cube, so a
         fingertip lands ON it), straight down in small slow steps until the contact sensing
-        of the approach zone stops the arm (it then backs off by itself). The measured Z is
-        stored as variable measured_top for the next steps. No contact down to
+        of the approach zone stops the arm. A contact PAUSES the robot (no back-off) and ends the
+        episode; the measured Z is stored as variable measured_top. No contact down to
         z_est - below_mm = the fingers went past the cube (not centred) -> fail."""
         if self._dry():
             memo.setdefault("vars", {})["measured_top"] = float(z_est)
             return {"ok": True, "measured_top": float(z_est), "detail": "dry_run: not probed"}
         specs = getattr(self.executor, "specs", None)
-        r = (self.executor.execute("set_gripper", {"position": int(grip)}) if specs is None or "set_gripper" in specs
-             else self.executor.execute("close_gripper", {}))     # explore: close_gripper stops at 50 %
+        r = (self.executor.execute("set_gripper", {"position": int(grip)}, internal=True) if specs is None or "set_gripper" in specs
+             else self.executor.execute("close_gripper", {}, internal=True))     # explore: close_gripper stops at 50 %
         if not r["ok"]:
             return {"ok": False, "detail": r.get("error", ""), "error_result": r}
         z_min = float(z_est) - float(below_mm)
@@ -280,7 +298,7 @@ class LocalSteps:
         r = {"ok": True}
         for _ in range(n):
             r = self.executor.execute("move_relative", {"dx": round(dx / n, 2), "dy": round(dy / n, 2), "frame": "tool",
-                                                        **({"speed": speed} if speed else {})})
+                                                        **({"speed": speed} if speed else {})}, internal=True)
             if not r["ok"]:
                 break
         return r
@@ -318,7 +336,7 @@ class LocalSteps:
                                   "is wrong at this height — look wrist and check which blob is the cube"}
             tx, ty = tx + dx, ty + dy
             r = self.executor.execute("move_relative", {"dx": round(dx, 1), "dy": round(dy, 1), "frame": "tool",
-                                                        **({"speed": speed} if speed else {})})
+                                                        **({"speed": speed} if speed else {})}, internal=True)
             if not r["ok"]:
                 return {"ok": False, "detail": r.get("error", ""), "iterations": i + 1, "error_result": r}
             if self._dry():
@@ -332,3 +350,23 @@ ROUTINES = {n[len("routine_"):] for n in dir(LocalSteps) if n.startswith("routin
 # what recovery steps may do after a failure: only open the fingers or go up
 RECOVERY_TOOLS = {"open_gripper"}
 RECOVERY_ROUTINES = {"lift_to"}
+
+
+def _colour_steps() -> set[str]:
+    """Core routines/checks that detect colours (directly or through another such step), as 'kind:name'."""
+    import inspect
+    src = {}
+    for n in dir(LocalSteps):
+        for kind in ("routine", "check"):
+            if n.startswith(kind + "_"):
+                src[f"{kind}:{n[len(kind) + 1:]}"] = inspect.getsource(getattr(LocalSteps, n))
+    found = {k for k, s in src.items() if re.search(r"self\._(wrist|env)\(|scene\.find", s)}
+    while True:
+        more = {k for k, s in src.items() if k not in found and any(
+            re.search(rf"self\.{kind}\(\s*['\"]{name}['\"]", s) for kind, name in (f.split(":") for f in found))}
+        if not more:
+            return found
+        found |= more
+
+
+COLOUR_STEPS = _colour_steps()

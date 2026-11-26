@@ -2,10 +2,36 @@
 #   scripts/run_explore.sh            (needs scripts/run_vision.sh running in another terminal)
 # Model, API key, speed cap: config/agent.yaml. Robot limits: config/robot.yaml.
 
-# The task that succeeded 3/3 on 17 Nov (165638, 172537, 173052, 173616): keep it as the default.
+# 23 Nov (operator): threading — wrist camera only, Astra moves the arm step by step itself.
 task: >
-  Move ALL THREE cubes (blue, green, yellow) from the top of the white box onto free spots of the metal
-  table, one at a time, each placement verified by the env camera. Finish with a short report.
+  Thread the wire loop held in the gripper through the eye of the needle. Everything else is set up and
+  correct: the cameras, the gripper and its grip, the needle and its holder. Do not question or reason about
+  them. Your only job: move the loop tip sideways to the eye (move_relative), then push it through
+  (insert). The robot starts at the operator's aligned start position insert_start. Success means the
+  wire loop visibly passes through the eye. Finish with a short report: what you see and, if unfinished,
+  the next correction.
+# 24 Nov (operator): focus — two episodes spent their calls doubting occlusion, depth and the views instead
+# of moving the tip to the eye. Before:
+#   Thread the object held in the gripper through the eye of the needle. The robot starts at the operator's
+#   aligned start position insert_start. Success means the object visibly passes through the eye; a finished
+#   motion alone is not success. Finish with a short report: the evidence and, if unfinished, the next
+#   correction.
+# 24 Nov: the longer version before the review (strategy steps; "automatically continues ... no operator reset"
+# was not true for this runner):
+#     Thread the object already held in the locked gripper through the eye of the needle.
+#     The operator's newly saved aligned starting position is insert_start (not insertion_start).
+#     Inspect the current state and wrist image first; use go_to_position(name="insert_start") only
+#     when the path is clear and the object is not engaged in the needle. Align with small measured
+#     corrections, then use the insert primitive for the slow stroke along the appropriate tool axis.
+#     Inspect with the wrist camera after insertion. A completed motion alone is not success:
+#     the object must visibly pass through the eye. If it misses or is unclear, inspect and revise
+#     the alignment before trying again; safely withdraw along the insertion path before lateral
+#     corrections when engaged. Preserve the gripper setting. Finish with evidence and the next
+#     correction if unfinished. Astra checks a fresh final wrist image and automatically continues
+#     from the current physical state until success; there is no operator reset between attempts.
+# 23 Nov earlier task (D455 + pick/place tools):
+#   Pick up all four blue cubes from the cardboard box and place them on top of the white box (there is room
+#   for all four on its top). The operator checks the result after the episode. Finish with a short report.
 
 # Other tasks tried on 17 Nov (not solved yet; see REPORT 10.26):
 #   Stack all cubes on red cubes. Report after done.
@@ -23,7 +49,7 @@ qwen:
   # no token budget and no call limit for qwen (local, free): it runs until it reports or Ctrl+C
 
 execution_mode: live      # live | confirm (ask y/N on every motion) | dry_run
-max_steps: 150            # model calls per episode (a skill call runs many steps locally); 20 Nov: 60 -> 150
+max_steps: 50             # model calls per episode (24 Nov threading: 50 -> 10 -> 30 -> 50)
 max_output_tokens: 2000
 
 harness:                  # token-efficient harness (agent/harness.py) — same safety in every variant
@@ -35,8 +61,9 @@ harness:                  # token-efficient harness (agent/harness.py) — same 
                           # validated, the rest of a turn's calls dropped after any error / refusal / event
   env_image_detail: high  # 20 Nov: Astra finds the objects in the env image itself
   wrist_image_detail: high
-  max_episode_tokens: 1000000  # stop the episode (not the robot mid-move) when reached; 0 = off (20 Nov: 400k -> 1M, images every look)
-  max_repeats: 3          # same action (tool + args) or same hypothesis this many times in a row ends the episode; 0 = off
+  repeat_pictures: false  # 24 Nov threading: pictures only when a call returns one (fewer image tokens)
+  max_episode_tokens: 500000   # stop the episode (not the robot mid-move) when reached; 0 = off (24 Nov: 300k -> 500k for 50 calls)
+  max_repeats: 0          # same action (tool + args) or same hypothesis this many times in a row ends the episode; 0 = off (24 Nov operator: no early stop; 1 mm inserts repeat legitimately)
   post_lift_image: true  # once per grasp, a wrist image after lifting while holding: log + review only, not shown live
 
 skills:
@@ -49,7 +76,8 @@ diagnosis:
   gate_after_repeats: 2         # refuse run_skill/save_skill only when the SAME failure repeats 2× undiagnosed (0 = never)
 reflect_max_steps: 6            # one reflection pass after each episode, ≤ 6 model calls
 
-episodes: 1               # attempts per run_explore.sh call (each followed by a self-review)
+until_success: true       # Astra visual self-check; no manual label/reset between attempts
+episodes: 0               # 0 = retry until success or safety stop/Ctrl+C; --episodes N caps attempts
 
 gripper:
   close_position: 500     # close_gripper stops at 50 % (0 = closed … 1000 = open); never closes further
@@ -66,6 +94,47 @@ speed_factor: 100         # controller global SpeedFactor at start (it multiplie
 
 skills_file: data/memory/skills_explore.json   # Astra's own skills (no built-in seeds)
 
+# 23 Nov (operator): Astra writes whole programs (code-as-policy); motion only through run_routine.
+program_mode: true         # session mode: the tool list below, the prompt describes exactly these tools
+cameras: [wrist, env]      # 24 Nov: wrist + the front colour camera (dashboard 'env'; no D455 any more)
+gripper_locked: true       # the gripper is set up closed on the threading object: no gripper motion at all
+max_step_mm: 10            # the operator aligned the setup: Astra only nudges (move_relative per call)
+max_step_deg: 5
+required_positions: [insert_start]   # the operator's aligned start pose (Debug tab -> Save position)
+locked_tools: [move_to_pose, move_to_joints, jog_joint, save_position]   # no large moves, also not from routines
+reference_task: threading  # data/references/threading/{success,fail}/*.jpg (scripts/dev/capture_reference.py)
+goal_picture: true         # the newest 'success' reference goes with the task, once (one image)
+show_knowledge: false      # no concept digest in the prompt (it is about the cube task)
+allowed_positions: [insert_start]
+one_look_per_motion: true  # 24 Nov (operator): pictures, then a motion, then the next pictures
+looks_per_motion: 2        # 24 Nov: 1 -> 2 (fake 0.2 mm retractions only to get a second view)
+keep_going: true           # 24 Nov (operator): no early stop — a stop is verified, then Astra continues
+calibrate_before_insert: true  # 24 Nov (operator): insert refused until tool dx and dy moves ran
+reasoning_effort: high     # 24 Nov (operator): low -> medium -> high (episode 160811: 20 reasoning tokens in 16 calls)
+# operator's own instructions to Astra (shown in the system prompt as OPERATOR RULES)
+operator_rules:            # 24 Nov (operator): the wrist is the working view, the front camera the check
+  - "Work with the wrist camera (look camera=\"wrist\"). Look at the env camera only when you want to check whether the alignment or the threading is right."
+  - "The object to thread is a needle threader: a thin wire loop (a narrow diamond of fine wire) that sticks out of the red holder in the gripper, not the red holder itself. Its tip (the front point of the loop) must go through the eye (the slot) of the needle. The wire is only a few pixels wide: zoom in to see it."
+  - "At insert_start the gripper is aligned for insertion: the default axis of insert points at the eye of the needle."
+  - "The env camera looks from the side, at a right angle to the needle and to the insert direction: insert moves the wire loop across the env picture. Use it to check passage: the loop is through when it crosses the needle INSIDE the eye (at the eye's height) and its tip shows on the far side. A loop that crosses the needle's shaft below or above the eye passes beside the needle, not through it."
+  # 24 Nov (operator): the env camera moved from head-on to a side view (head-on could not show passage). Before:
+  # The env camera faces the insertion head-on: it looks against the insert direction, ...
+  - "go_to_position(insert_start) is only for going back to the start after moving past the target or losing the alignment."
+  - "Procedure, step by step (the cameras are not calibrated to the robot; you calibrate them): 1) Look at the wrist camera zoomed on the eye and the loop tip. 2) Calibrate: move_relative frame=\"tool\" dx=+1, look with the same zoom; then dy=+1, look with the same zoom. The wrist camera moves with the gripper: in the wrist picture the wire loop and the red holder stay still and the needle eye moves, so measure how the EYE moves (in the env picture the wire loop moves). Write one line: for dx and for dy, which way and how many pixels the eye moved per mm. 3) Measure the tip-to-eye offset in pixels, convert it to mm with your calibration and correct it with ONE move_relative (dx and dy together). Look. Repeat 3 until the tip is on the eye. 4) insert 1 to 3 mm, look; repeat until the wire loop is through. insert is refused until the dx and dy calibration moves have run."
+  - "Calibrate once per attempt; the numbers hold for the whole attempt. Do not go back to insert_start to calibrate again: correct from where you are with your numbers."
+  - "Keep each turn short: one measurement from the picture, then the next motion. Do not re-derive the calibration or reason about anything outside these steps."
+  - "Every motion should bring the loop tip closer to the eye or through it. Do not move back along the insert axis just to get another picture; move back only after pushing past the eye or losing the alignment."
+  - "Two pictures per motion: after two looks or compare_reference calls, the next picture is refused until a motion (move_relative, insert or go_to_position) has run. Use the second picture for the other camera or another zoom. A motion and the next picture may be sent in the same turn."
+program_tools:             # 24 Nov threading, 10 calls: no routines / history (their descriptions cost ~3k tokens a call)
+  - get_state
+  - look
+  - compare_reference
+  - move_relative
+  - go_to_position
+  - insert
+# the cube task used: get_state, look, depth_at, locate_object, pick_object, place_object, insert, + routines
+
+# the turn-by-turn tool set (program_mode: false): diagnosis and comparison runs
 allowed_tools:
   # primitives
   - get_state

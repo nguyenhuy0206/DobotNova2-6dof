@@ -7,7 +7,7 @@ PRIMITIVES = {"get_state", "move_to_pose", "move_to_joints", "move_relative", "j
 
 def test_registry_exposes_primitives(prims):
     specs = build_registry(prims)
-    assert {s.name for s in specs} == PRIMITIVES
+    assert {s.name for s in specs} == PRIMITIVES | {"pick_object", "place_object", "insert"}
     tools = to_openai_tools(specs)
     assert all(t["type"] == "function" and t["description"] and "parameters" in t for t in tools)
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Astra explores the cell and learns to pick the blocks (config/explore.yaml).
+"""Astra explores the cell using the task and limits in config/explore.yaml.
 
     scripts/run_explore.sh                     run the task from explore.yaml (live, fixed 50 % speed)
     scripts/run_explore.sh --mode confirm      ask y/N before every motion
     scripts/run_explore.sh "custom task text"
     scripts/run_explore.sh --episodes 5        5 attempts; after each Astra reviews it and updates skills/notes
+    scripts/run_explore.sh --until-success     fresh visual check + automatic retry, no manual label/reset
+    scripts/run_explore.sh --no-until-success --episodes 1   one supervised attempt
     scripts/run_explore.sh --review 2          no robot: Astra reviews the last 2 episodes (outcome, skills, notes)
     scripts/run_explore.sh --review-all        no robot: one review across ALL grasp episodes -> concrete skills
     scripts/run_explore.sh --variant V0        harness variant for this run (V0 baseline … V3 default)
@@ -29,12 +31,31 @@ def ask_operator(name: str, args: dict) -> bool:
     return input(f"\n>> Astra wants {name}({args}). Execute? [y/N] ").strip().lower() == "y"
 
 
+def ask_label(episode: str) -> None:
+    """The operator's real outcome of the attempt: the next episode's report uses it while the verifier is not
+    qualified, and the labels qualify the verifier (data/judge/labels.jsonl)."""
+    from agent.explore.attempts import LABELS, record_label
+    ans = input("\n>> Real outcome? d = success, k = failure, ? = unclear, Enter = skip: ").strip().lower()
+    if ans not in LABELS:
+        print("   (no label)")
+        return
+    note = input("   Why / what happened (short, Enter = none): ")
+    row = record_label(episode, LABELS[ans], note)
+    print(f"   labelled {row['label']}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("task", nargs="?", help="override the task in config/explore.yaml")
     ap.add_argument("--mode", choices=["dry_run", "confirm", "live"])
     ap.add_argument("--yes", action="store_true", help="don't wait for Enter before starting")
-    ap.add_argument("--episodes", type=int, help="attempts in a row (default: explore.yaml episodes)")
+    ap.add_argument("--episodes", type=int, help="attempt cap; 0 = unlimited with --until-success")
+    retry = ap.add_mutually_exclusive_group()
+    retry.add_argument("--until-success", dest="until_success", action="store_true",
+                       help="Astra checks fresh images and retries without operator label/reset")
+    retry.add_argument("--no-until-success", dest="until_success", action="store_false")
+    ap.set_defaults(until_success=None)
+    ap.add_argument("--no-label", action="store_true", help="do not ask the operator for the real outcome after each episode")
     ap.add_argument("--no-reflect", action="store_true", help="skip the self-review after each episode")
     ap.add_argument("--review-all", action="store_true", help="review all grasp episodes together (robot not used)")
     ap.add_argument("--review", metavar="N|ID", help="only review the last N episodes, or one episode id (robot not used)")
@@ -52,6 +73,15 @@ def main() -> None:
         skill_admin(args)
         return
     s = build_explore(confirm=ask_operator, mode=args.mode, variant=args.variant, driver=args.driver)
+    until_success = (s.cfg.until_success and s.cfg.driver == "astra") if args.until_success is None else args.until_success
+    episodes = s.cfg.episodes if args.episodes is None else args.episodes
+    # A disabled autonomous loop defaults to one attempt even if YAML uses an unlimited cap.
+    if not until_success and args.episodes is None and episodes == 0:
+        episodes = 1
+    if episodes < 0 or (episodes == 0 and not until_success):
+        ap.error("--episodes must be positive, or 0 with --until-success")
+    if until_success and s.cfg.driver != "astra" and not (args.review or args.review_all):
+        ap.error("--until-success requires --driver astra; use --no-until-success for qwen")
     if s.cfg.driver == "qwen":
         args.no_reflect = True          # the self-review writes knowledge and skills: not the student's job
         print(f"Driver: {s.harness.client.endpoint} (no self-review after the episode)")
@@ -88,14 +118,16 @@ def main() -> None:
     print(f"  controller SpeedFactor: {s.set_global_speed()}")
 
     task = args.task or s.cfg.task
-    episodes = args.episodes or s.cfg.episodes
-    print(f"\nTask: {task.strip()}\nEpisodes: {episodes} (self-review after each: {not args.no_reflect})")
+    print(f"\nTask: {task.strip()}\nEpisodes: {episodes or 'until success'} "
+          f"(self-review after each: {not args.no_reflect}; autonomous check/retry: {until_success})")
     if not args.yes:
         input("\nRobot will move by itself. Hand on the E-stop. Enter = start, Ctrl+C = cancel ")
     try:
-        for i in range(1, episodes + 1):
-            print(f"\n========== episode {i}/{episodes}")
-            out = s.run_episode(task, reflect=not args.no_reflect)
+        i = 0
+        while episodes == 0 or i < episodes:
+            i += 1
+            print(f"\n========== episode {i}/{episodes or 'until success'}")
+            out = s.run_episode(task, reflect=not args.no_reflect, self_check=until_success)
             print(f"\n[report] {out['report']}")
             if out.get("diagnosis"):
                 print(f"[diagnosis] {out['diagnosis']}")
@@ -106,7 +138,21 @@ def main() -> None:
             print_metrics("episode", out.get("metrics"))
             print_metrics("review", out.get("reflection_metrics"))
             print(f"[episode] data/episodes/{out['episode']}.jsonl")
-            if i < episodes:
+            if until_success:
+                check = out.get("self_check") or {}
+                print(f"[Astra self-check] {check.get('status', 'not checked')} · {check.get('evidence', '')}")
+                print_metrics("check", check.get("metrics"))
+                stop = autonomous_stop(s, out)
+                if stop:
+                    print(f"[retry stopped] {stop}")
+                    break
+                if episodes and i >= episodes:
+                    print("[retry stopped] attempt cap reached; success not established")
+                    break
+                print(f"[retry] {check.get('next_action', '')}")
+            elif not args.no_label:
+                ask_label(out["episode"])
+            if not until_success and i < episodes:
                 ans = input("\nReset the scene (blocks back on the box), then Enter = next episode, q = stop ")
                 if ans.strip().lower() == "q":
                     break
@@ -131,6 +177,22 @@ def main() -> None:
         raise SystemExit(130)
 
 
+def autonomous_stop(session, out: dict) -> str | None:
+    """Fail closed before the next episode can clear the executor's stop latch."""
+    from agent.explore.checking import retry_stop_reason
+    stop = out.get("retry_stop") or retry_stop_reason(session, out["episode"])
+    if stop:
+        return stop
+    check = out.get("self_check") or {}
+    if not check.get("retry_allowed"):
+        return "visual check unavailable or incomplete"
+    verdict = session.harness.judge.ledger.outcome(out["episode"])
+    if check.get("status") == "success" and verdict.get("status") != "failed":
+        return "task complete according to Astra's visual self-check (not judge credit)"
+    problems = session.preflight()
+    return "; ".join(problems) if problems else None
+
+
 def print_metrics(label: str, m: dict | None) -> None:
     if not m:
         return
@@ -143,7 +205,8 @@ def print_metrics(label: str, m: dict | None) -> None:
 
 
 def print_skills(s) -> None:
-    _print_skills(s.harness.skills.all())
+    if "run_skill" in (getattr(s.executor, "specs", None) or {"run_skill": None}):   # 24 Nov: no skill tools -> no list
+        _print_skills(s.harness.skills.all())
 
 
 def _print_skills(skills) -> None:

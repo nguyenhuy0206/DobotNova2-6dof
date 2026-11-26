@@ -216,10 +216,30 @@ def _detections(cam: str, objects: list, params: dict, out: dict, tip: tuple | N
 CALIBRATION = "tool127_table0"
 OLD_CALIBRATION_SINCE = "2026-11-18 16:15:00"     # episodes before this used tool 118 mm / table 41.96
 
+
+def calibration_since(calibration_file=None) -> str | None:
+    """'YYYY-MM-DD HH:MM:SS' of the current camera/robot calibration (its 'created' stamp), or None.
+    23 Nov (operator): Astra uses only numbers measured in the current calibration; everything recorded
+    before it stays in the files but is not shown."""
+    try:
+        if calibration_file is None:
+            from calibration.files import CALIBRATION_FILE as calibration_file
+        c = json.loads(Path(calibration_file).read_text())["created"]        # 20261123-132353
+        return f"{c[:4]}-{c[4:6]}-{c[6:8]} {c[9:11]}:{c[11:13]}:{c[13:15]}"
+    except Exception:  # noqa: BLE001 — no calibration report: no cut-off
+        return None
+
+
+def episode_time(episode: str) -> str:
+    """Episode id 20261123-153625-xxxx -> '2026-11-23 15:36:25'."""
+    e = str(episode or "")
+    return f"{e[:4]}-{e[4:6]}-{e[6:8]} {e[9:11]}:{e[11:13]}:{e[13:15]}" if len(e) >= 15 else ""
+
 class Observations:
     def __init__(self, path: Path = OBSERVATIONS_FILE):
         self.path = path
-        self.items: list[dict] = []
+        self.items: list[dict] = []                # everything in the file (ids are positions in it)
+        self.since: str | None = None              # shown/used: only records made at or after this time
         if path.exists():
             self.items = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -238,9 +258,14 @@ class Observations:
             f.write(json.dumps(obs, ensure_ascii=False) + "\n")
         return obs
 
+    @property
+    def current(self) -> list[dict]:
+        """The records of the current calibration (all when no cut-off is set)."""
+        return self.items if not self.since else [o for o in self.items if str(o.get("t", "")) >= self.since]
+
     def variables(self, limit: int = 120) -> list[str]:
         seen: dict[str, int] = {}
-        for o in self.items[-2000:]:
+        for o in self.current[-2000:]:
             for k in o["vars"]:
                 seen[k] = seen.get(k, 0) + 1
         return sorted(seen, key=lambda k: -seen[k])[:limit]
@@ -268,10 +293,15 @@ class KnowledgeStore:
         self.path.write_text(json.dumps({"concepts": self.concepts}, ensure_ascii=False, indent=1) + "\n",
                              encoding="utf-8")
 
+    def visible(self) -> list[dict]:
+        """Concepts touched in the current calibration (older ones describe old coordinates: kept, not shown)."""
+        since = (self.obs.since or "")[:16]
+        return [c for c in self.concepts if not since or max(c.get("updated", ""), c.get("created", "")) >= since]
+
     def _concept(self, cid: str) -> dict:
-        c = next((x for x in self.concepts if x["id"] == cid), None)
+        c = next((x for x in self.visible() if x["id"] == cid), None)
         if c is None:
-            raise ValidationError(f"no concept {cid!r} (known: {[x['id'] for x in self.concepts]})")
+            raise ValidationError(f"no concept {cid!r} (known: {[x['id'] for x in self.visible()]})")
         return c
 
     def _hyp(self, hid: str) -> tuple[dict, dict]:
@@ -287,7 +317,7 @@ class KnowledgeStore:
     # ------------------------------------------------------------ evidence (computed, never written)
     def evidence(self, h: dict) -> dict:
         sup, con, new_sup = [], [], 0
-        for o in self.obs.items:
+        for o in self.obs.current:
             r = judge(h, o["vars"])
             if r == "supports":
                 sup.append(o)
@@ -350,7 +380,7 @@ class KnowledgeStore:
         if len(quantity) < 8:
             raise ValidationError("quantity: the physical quantity or relation, e.g. 'finger-gap position in the "
                                   "wrist image'")
-        for c in self.concepts:
+        for c in self.visible():
             if not c.get("archived") and _overlap(quantity, c["quantity"]) >= 0.6:
                 raise ValidationError(f"{c['id']} already covers this: '{c['quantity']}'. Use it (update_model / "
                                       "propose_hypothesis), or name the quantity so the difference is explicit.")
@@ -427,7 +457,7 @@ class KnowledgeStore:
     def list(self, concept_id: str | None = None, include_archived: bool = False) -> dict:
         if concept_id:
             return self._cview(self._concept(concept_id), ids=8)
-        rows = [self._cview(c, ids=0) for c in self.concepts if include_archived or not c.get("archived")]
+        rows = [self._cview(c, ids=0) for c in self.visible() if include_archived or not c.get("archived")]
         return {"concepts": rows, "total": len(rows)}
 
     def record_measurement(self, values: dict, note: str = "") -> dict:
@@ -451,7 +481,7 @@ class KnowledgeStore:
               this_episode: bool = False) -> dict:
         where = _spec_ok(where or {}, "where", False)
         ep = self.focus_episode or self.episode
-        rows = [o for o in self.obs.items if (not this_episode or o.get("episode") == ep)
+        rows = [o for o in self.obs.current if (not this_episode or o.get("episode") == ep)
                 and all(k in o["vars"] and holds(v, o["vars"][k]) for k, v in where.items())]
         keep = list(fields or []) or None
         out = []
@@ -476,7 +506,7 @@ class KnowledgeStore:
     def _react(self, obs: dict) -> dict:
         """Prediction errors: live hypotheses (proposed before this observation) it contradicts."""
         errors = []
-        for c in self.concepts:
+        for c in self.visible():
             if c.get("archived"):
                 continue
             for h in self._live(c):
@@ -493,7 +523,7 @@ class KnowledgeStore:
         """One block per concept (newest activity first): model, then its hypotheses with
         status, counts and the range they were tested over. No raw observations."""
         blocks = []
-        for c in self.concepts:
+        for c in self.visible():
             if c.get("archived"):
                 continue
             lines = [f"- {c['id']} {c['quantity']}" + (f" (depends on {', '.join(c['depends_on'])})"
@@ -535,7 +565,7 @@ class KnowledgeStore:
         mine = [o for o in self.obs.items if o.get("episode") == episode]
         if not mine:
             return "No observations were recorded in this episode."
-        live = [h for c in self.concepts if not c.get("archived") for h in c["hypotheses"]
+        live = [h for c in self.visible() if not c.get("archived") for h in c["hypotheses"]
                 if not h.get("archived")]
         errors, confirmed, uncovered = [], {}, {}
         for o in mine:

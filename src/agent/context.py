@@ -26,7 +26,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 MILESTONE_TAGS = ("grasp_caught", "grasp_missed", "released", "skill_ok", "skill_failed", "contact",
-                  "verify_ambiguous", "scene_changed", "safety_block", "ERROR")
+                  "verify_ambiguous", "scene_changed", "safety_block", "ERROR", " measured ")
 
 
 @dataclass
@@ -46,6 +46,40 @@ REFERENCE_TOOLS = ("list_skills", "list_routines", "read_routine", "list_concept
                    "read_history")
 
 
+KEPT_FIELDS = ("error", "error_type", "observation", "prediction_errors", "diagnosis")
+
+
+def _fit_trace(res: dict, limit: int) -> dict:
+    """A program trace that fits: every failed entry, the first two and as many of the last as fit; the
+    entries left out are counted (23 Nov audit: blind slicing cut the CONTACT at the end of a long trace)."""
+    trace = res["trace"]
+    failed = [i for i, e in enumerate(trace) if isinstance(e, dict) and not e.get("ok")]
+    # always kept: the first entry, the first and last failed entries, the last entry
+    must = {0, len(trace) - 1} | ({failed[0], failed[-1]} if failed else set())
+    order = ([i for i in range(len(trace)) if i not in must and i not in failed]      # ok entries first,
+             + [i for i in failed if i not in must])                                  # then other failures
+    keep = set(range(len(trace)))
+
+    def size(entries):
+        return len(json.dumps({**res, "trace": entries, "trace_note": "x" * 90}, default=str))
+
+    for i in order:                                       # oldest first
+        if size([trace[j] for j in sorted(keep)]) <= limit:
+            break
+        keep.discard(i)
+    shown = [trace[j] for j in sorted(keep)]
+    if size(shown) > limit:                               # still too long: the kept entries in short form
+        shown = [{k: e.get(k) for k in ("i", "tool", "ok", "error") if k in e} if isinstance(e, dict) else e
+                 for e in shown]
+        shown = [{**e, "error": str(e["error"])[:160]} if isinstance(e, dict) and "error" in e else e for e in shown]
+    if len(keep) == len(trace) and shown == trace:
+        return res
+    note = (f"{len(keep)} of {len(trace)} entries shown ({len(failed)} failed; kept: first, last, first and last "
+            "failed; i = position)")
+    rest = {k: v for k, v in res.items() if k != "trace"}
+    return {"trace_note": note, **rest, "trace": shown}
+
+
 def compact_result(result: dict, limit: int) -> str:
     """Tool result for the model without images and bulky fields."""
     res = result.get("result")
@@ -54,10 +88,15 @@ def compact_result(result: dict, limit: int) -> str:
         if "objects" in res:
             res["objects"] = [{k: o.get(k) for k in ("label", "pixel", "bbox", "area_px", "base_xyz_mm", "angle_deg", "cut_by_edge")
                                if o.get(k) is not None} for o in res["objects"]]
-    out = {"ok": result.get("ok"), **({"error": result["error"]} if "error" in result else {}),
+        if isinstance(res.get("trace"), list) and res["trace"]:
+            res = _fit_trace(res, limit - 200)
+    out = {"ok": result.get("ok"), **{k: result[k] for k in KEPT_FIELDS if k in result},
+           **({"executed": result["executed"]} if not result.get("ok") and "executed" in result else {}),
            **({"result": res} if res is not None else {})}
     text = json.dumps(out, ensure_ascii=False, default=str)
-    return text if len(text) <= limit else text[:limit] + "…"
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"… [cut: {len(text) - limit} more characters]"
 
 
 @dataclass
@@ -85,6 +124,11 @@ class WorkingMemory:
             self.turns.popleft()
         self.latest = executed
         for n, a, r in executed:
+            if n in ("write_routine", "rollback_routine"):
+                # the routine changed: an older read_routine / list_routines result is no longer true
+                for key in [k for k, (rn, ra, _) in self.reference.items()
+                            if rn == "list_routines" or (rn == "read_routine" and ra.get("name") == a.get("name"))]:
+                    self.reference.pop(key)
             if n in REFERENCE_TOOLS and r.get("ok"):
                 key = f"{n} {json.dumps(a, sort_keys=True, ensure_ascii=False, default=str)}"
                 self.reference.pop(key, None)
@@ -128,9 +172,12 @@ class WorkingMemory:
         latest_ids = {id(r) for _, _, r in self.latest}
         kept = [(n, a, r) for n, a, r in self.reference.values() if id(r) not in latest_ids]
         if kept:
-            parts.append("LOOKUPS YOU MADE (latest result of each, kept until you repeat it):\n" + "\n".join(
+            parts.append(f"LOOKUPS YOU MADE (latest result of each, the last {self.policy.reference_items} kept, each "
+                         f"cut to {self.policy.reference_chars} characters (read_routine {4 * self.policy.reference_chars}); a read_routine is dropped when that "
+                         "routine is written or rolled back):\n" + "\n".join(
                 f"{n}({json.dumps(a, ensure_ascii=False, default=str)[:200]}) -> "
-                f"{compact_result(r, self.policy.reference_chars)}" for n, a, r in kept))
+                f"{compact_result(r, 4 * self.policy.reference_chars if n == 'read_routine' else self.policy.reference_chars)}"
+                for n, a, r in kept))
         if self.digest:
             parts.append("EPISODE SO FAR (one line per action, oldest routine lines dropped):\n"
                          + "\n".join(line for _, line in self.digest))
@@ -142,7 +189,8 @@ class WorkingMemory:
             budget = self.policy.latest_result_chars
             lines = []
             for n, a, r in self.latest:
-                line = f"{n}({json.dumps(a, ensure_ascii=False, default=str)[:300]}) -> {compact_result(r, budget)}"
+                floor = 2500 if n == "run_routine" else 400      # a program result is the run's evidence
+                line = f"{n}({json.dumps(a, ensure_ascii=False, default=str)[:300]}) -> {compact_result(r, max(budget, floor))}"
                 budget = max(400, budget - len(line))
                 lines.append(line)
             parts.append("RESULTS OF YOUR LAST TOOL CALLS:\n" + "\n".join(lines))

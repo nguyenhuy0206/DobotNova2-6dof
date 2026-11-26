@@ -8,7 +8,6 @@ import json
 from actions.executor import ActionSpec
 from actions.registry import _obj
 from common.errors import ValidationError
-from memory.hypotheses import HypothesisStore
 from memory.knowledge import MAX_LIVE_HYPOTHESES, KnowledgeStore
 from memory.notes import NotesStore
 from memory.skills import SkillLibrary
@@ -77,7 +76,9 @@ def knowledge_specs(store: KnowledgeStore) -> list[ActionSpec]:
                                        ["knowledge_id", "reason"])),
         ActionSpec("query_observations",
                    "Recorded observations (newest last) whose variables match `where`; fields = which variables "
-                   "to show (default all). Without matches or fields it also lists the variable names in use.",
+                   "to show (default all); a field an observation lacks shows as null. Only observations recorded "
+                   "since the current calibration. Without matches or fields it also lists the variable names "
+                   "used in them.",
                    store.query, _obj({"where": cond, "fields": {"type": "array", "items": {"type": "string"}},
                                       "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                                       "this_episode": {"type": "boolean"}}, []), read_only=True),
@@ -91,29 +92,27 @@ def knowledge_specs(store: KnowledgeStore) -> list[ActionSpec]:
 def history_spec(notes: NotesStore) -> ActionSpec:
     def read_history(kind: str = "episodes", query: str = "", limit: int = 15) -> dict:
         from agent.explore.learning import history
+        from memory.knowledge import calibration_since, episode_time
+        since = calibration_since() or ""          # operator, 23 Nov: the current calibration only
         limit = max(1, min(int(limit), 60))
         q = str(query or "").lower()
         if kind == "episodes":
-            from memory.knowledge import CALIBRATION, OLD_CALIBRATION_SINCE
-            rows = [{**{k: h.get(k) for k in ("episode", "at", "claim")},
-                     "calib": "tool118_table42" if str(h.get("at") or "") < OLD_CALIBRATION_SINCE else CALIBRATION}
-                    for h in history(last=10000, claims_only=True) if not q or q in json.dumps(h).lower()]
+            rows = [{k: h.get(k) for k in ("episode", "at", "claim")}
+                    for h in history(last=10000, claims_only=True)
+                    if episode_time(h.get("episode")) >= since and (not q or q in json.dumps(h).lower())]
             return {"episodes": rows[-limit:], "total": len(rows)}
-        if kind == "old_hypotheses":
-            old = HypothesisStore()
-            rows = [{"id": h["id"], "status": h["status"], "claim": h["claim"][:200], "scope": h["scope"]}
-                    for h in old.list(query=q or None, limit=10000)["hypotheses"]]
-            return {"old_hypotheses": rows[-limit:], "total": len(rows),
-                    "note": "from before concepts existed; not checked against observations"}
         if kind == "notes":
-            return notes.read(q or None)
-        raise ValidationError("kind: episodes | old_hypotheses | notes")
+            rows = [n for n in notes.read(None, limit=100000)["notes"]
+                    if str(n.get("t", "")) >= since[:16] and (not q or q in json.dumps(n).lower())]
+            return {"notes": rows[-limit:], "total": len(rows)}
+        raise ValidationError("kind: episodes | notes")
 
     return ActionSpec("read_history",
-                      "Brief of the past, not in the prompt: kind=episodes (outcome + summary written at review), "
-                      "old_hypotheses (the earlier free-text hypotheses, incl. archived), notes (raw notes). "
-                      "query filters by text.",
-                      read_history, _obj({"kind": {"type": "string", "enum": ["episodes", "old_hypotheses", "notes"]},
+                      "Brief of the past (since the current calibration), not in the prompt: kind=episodes (the "
+                      "claim written at each review: success / blocks_moved / summary as claimed, not a verified "
+                      "outcome), notes (raw notes). query keeps the entries containing that text; limit = the "
+                      "newest N.",
+                      read_history, _obj({"kind": {"type": "string", "enum": ["episodes", "notes"]},
                                           "query": {"type": "string"},
                                           "limit": {"type": "integer", "minimum": 1, "maximum": 60}}, []),
                       read_only=True)
@@ -124,7 +123,7 @@ def code_specs(get_local) -> list[ActionSpec]:
     code = AstraCode.default()
 
     def run_routine(name: str, args: dict | None = None, kind: str = "routine") -> dict:
-        local, memo = get_local(), {}
+        local, memo = get_local(), {"vars": {}}
         out = (local.check if kind == "check" else local.routine)(name, memo, **(args or {}))
         out = {k: v for k, v in out.items() if k != "error_result"}
         if memo.get("vars"):
@@ -139,16 +138,33 @@ def code_specs(get_local) -> list[ActionSpec]:
         ActionSpec("read_routine", "Python source of a routine/check (yours or core) and its version history.",
                    code.read, _obj({"name": {"type": "string"}}, ["name"]), read_only=True),
         ActionSpec("write_routine",
-                   "Create or replace a routine/check with Python (same name as a core one replaces it; lift_to is "
-                   "protected). File: docstring, KIND = 'routine'|'check', def run(ctx, memo, **params) -> dict with "
-                   "'ok' (+ 'detail', numbers). ctx: execute(tool, args) / move(dx,dy,dz,drz,frame,speed) / "
-                   "vertical(z, step_mm, speed) / tool_hop(dx,dy,speed) — all through the safety-checked executor; "
-                   "tip(), state(), depth_at(pixels, window_px, plane_z, look=True) (D455 depth / base_xyz_mm at pixels "
-                   "of a fresh env picture), wrist(color,min_area) / env(color) (HSV colour-threshold blobs), "
-                   "anchor(blob), dry, routine(name, memo, **a), "
-                   "check(...), contact (status/add/dz/target), table_z, block_top_z. memo['vars'][k] = v passes a "
-                   "value to later skill steps as {k}. math, statistics, re available; no imports/files. The old "
-                   "version is kept (rollback_routine); run_routine runs it on its own.",
+                   "Create or replace a routine/check: a Python file run locally by run_routine (same name as a core "
+                   "one replaces it; lift_to is protected). File: a docstring, KIND = 'routine' or 'check', and "
+                   "def run(ctx, memo, **params) returning a dict with 'ok' (bool) plus anything else (e.g. 'detail', "
+                   "numbers); run_routine's args are passed as Python keyword arguments. memo: a dict shared with "
+                   "routines/checks called from this one; memo['vars'] comes back as 'vars' in the result. "
+                   "ctx (nothing else exists on it, checked when written):\n"
+                   "- ctx.execute(tool, args) -> the tool's result envelope {ok, result | error, error_type, executed}; "
+                   "never raises for a refused move, check r['ok']. Tools and their arguments are listed below.\n"
+                   "- ctx.move(dx=0, dy=0, dz=0, drz=0, frame='base', speed=None) = execute('move_relative', …).\n"
+                   "- ctx.vertical(z, step_mm=19, speed=None): straight up/down to fingertip z in steps of step_mm "
+                   "(> 0); when a lift is not reachable it moves 15 mm towards the base (up to 3 times) and goes on; "
+                   "returns {ok, z, moves[, detail, detours]}, ok=false if z was not reached.\n"
+                   "- ctx.tool_hop(dx, dy, speed=None): tool-frame sideways move in pieces of at most 20 mm.\n"
+                   "- ctx.tip() -> fingertip [x, y, z, rx, ry, rz]; ctx.state() -> {pose, mode, error, moving, "
+                   "gripper}.\n"
+                   "- ctx.depth_at(pixels, window_px=2, plane_z=None, look=True) -> list of points as in the depth_at "
+                   "tool; pixels are FULL-image pixels (not pixels of a zoomed picture); look=True takes a new env "
+                   "frame first (the scene as it is then, the arm included), look=False uses the frame of the last "
+                   "env look/depth_at. Raises ValueError when depth_at fails.\n"
+                   "- ctx.anchor(obj) -> bottom-centre (x + w/2, y + h) of obj['bbox'] = [x, y, w, h].\n"
+                   "- ctx.routine(name, memo, **a) / ctx.check(name, memo, **a): call another routine/check.\n"
+                   "- ctx.dry (True in dry_run), ctx.table_z, ctx.block_top_z, ctx.trace (the entries so far).\n"
+                   "Code cannot see pictures: pixels come in as params. One run: at most 120 recorded ctx calls "
+                   "(each routine/check called from it has its own 120); the 300 s limit is checked at each "
+                   "recorded call. math, statistics, re are available; no imports, files, classes, lambdas, names "
+                   "starting with '__' or attributes starting with '_'. The previous version is kept "
+                   "(rollback_routine).",
                    code.write, _obj({"name": {"type": "string"}, "code": {"type": "string"},
                                      "note": {"type": "string"}}, ["name", "code"])),
         ActionSpec("rollback_routine",
@@ -157,8 +173,76 @@ def code_specs(get_local) -> list[ActionSpec]:
                    code.rollback, _obj({"name": {"type": "string"}, "version": {"type": "integer", "minimum": 0}},
                                        ["name", "version"])),
         ActionSpec("run_routine",
-                   "Run one routine (or kind=check) directly to test it, outside a skill. Moves the robot in live "
-                   "mode (all limits apply).",
+                   "Run one of your routines (or kind=check) with args (keyword arguments of its run()). In live mode "
+                   "the robot moves; every motion is checked like a tool call. Returns the program's own dict (its "
+                   "'ok' is the program's result) plus vars (memo['vars']); one of YOUR routines also returns "
+                   "routine, version and trace: one entry per ctx.execute / move / vertical / tool_hop / depth_at / "
+                   "routine / check call in order (tip, state and anchor are not recorded) {i, tool, args, ok, s "
+                   "(seconds), error, pose (fingertip x,y,z after it), grip_status, position, holding, z, moves, "
+                   "detail, points (depth_at)}; a nested routine/check is one entry holding its own trace (core "
+                   "routines have none). A program that raises returns ok=false with the exception and its line "
+                   "(code_error). If a move is stopped by the safety layer (contact, alarm, timeout) the robot is "
+                   "paused, later motions of the program are refused and the episode ends after this call.",
                    run_routine, _obj({"name": {"type": "string"}, "args": {"type": "object"},
-                                      "kind": {"type": "string", "enum": ["routine", "check"]}}, ["name"])),
+                                      "kind": {"type": "string", "enum": ["routine", "check"]}}, ["name"]),
+                   delegates=True),
     ]
+
+
+def routine_api(executor) -> str:
+    """The tools a program may call through ctx.execute, with their real arguments and defaults (23 Nov audit:
+    program mode offers no motion tools, so their schemas never reached the model)."""
+    import inspect
+    from actions.astra_code import ROUTINE_TOOLS
+    lines = []
+    for name in sorted(ROUTINE_TOOLS):
+        spec = executor.all_specs.get(name)
+        if spec is None:
+            continue
+        props, req = spec.parameters.get("properties", {}), set(spec.parameters.get("required", []))
+        try:
+            defaults = {k: v.default for k, v in inspect.signature(spec.handler).parameters.items()
+                        if v.default is not inspect.Parameter.empty}
+        except (TypeError, ValueError):
+            defaults = {}
+        args = []
+        for k, sch in props.items():
+            if k == "speed":
+                continue                                # ignored (fixed speed)
+            kind = sch.get("type", "")
+            if "enum" in sch:
+                kind = "|".join(map(str, sch["enum"]))
+            text = f"{k}: {kind}" + ("" if k in req else f" = {defaults.get(k)!r}" if k in defaults else " (optional)")
+            args.append(text)
+        offered = name in executor.specs          # the model has this tool's full description already
+        lines.append(f"- {name}({', '.join(args)}): "
+                     + (spec.description.split('. ')[0].rstrip('.') + "." if offered else spec.description))
+    return ("\nTools for ctx.execute (arm-motion results carry pose = fingertip [x, y, z, rx, ry, rz], flange_pose, "
+            "joints_deg; gripper results carry position, grip_state and, for close_gripper, holding):\n"
+            + "\n".join(lines))
+
+
+def reference_spec(scene, task: str) -> ActionSpec:
+    """24 Nov (operator, threading): compare a fresh wrist picture with the operator's reference pictures."""
+    from perception.reference import compare, load_references
+
+    def compare_reference(camera: str = "wrist") -> dict:
+        if camera not in scene.sources:
+            raise ValidationError(f"camera must be one of {sorted(scene.sources)}")
+        frame = scene.observe(camera)
+        out = compare(frame.color, load_references(task))
+        picture = out.pop("picture")
+        return {**out, "camera": "reference", "image_jpeg_b64": scene.encode_image(picture, []),
+                "picture_label": (f"Picture: comparison, three raw pictures side by side: LEFT = the {camera} "
+                                  "camera now, MIDDLE = the closest operator reference of the finished state "
+                                  "(success), RIGHT = the closest operator reference of the unfinished state (fail)")}
+
+    return ActionSpec("compare_reference",
+                      "Take a fresh wrist picture and compare it with the operator's reference pictures of this "
+                      "task, taken with the wrist camera: 'success' (finished) and 'fail' "
+                      "(not finished). Returns scores (normalised correlation of the whole small, blurred, grey "
+                      "pictures with the closest reference of each label: 1 = identical), closer_to, margin and "
+                      "one picture: now | closest success reference | closest fail reference. The scores compare "
+                      "whole pictures (a different arm pose changes them too); they are a cue, not a verdict.",
+                      compare_reference, _obj({"camera": {"type": "string", "enum": ["wrist"]}}, []),
+                      read_only=True)

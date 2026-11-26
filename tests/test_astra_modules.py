@@ -296,3 +296,16 @@ def test_routines_and_skills_may_use_depth_at():
     assert astra_code.SKILL_TOOLS is skill_runner.SKILL_TOOLS
     assert "depth_at" in astra_code.SKILL_TOOLS
     assert hasattr(astra_code.RoutineContext, "depth_at")
+
+
+def test_depth_at_takes_full_image_pixels_whatever_was_shown():
+    """23 Nov 154154: 'pixels of the picture last shown' flipped meaning with every zoom; one rule now."""
+    scene = scene_with([((0, 0, 220), (320, 240), 20, 0.95)])
+    full = scene.look("env")
+    z = scene.look("env", zoom=[160, 120, 320, 240])                 # 2x enlarged crop around the centre
+    assert z["picture_scale"] == 2.0 and z["picture_size"] == [640, 480]
+    p = scene.depth_at([[320, 240]])["points"][0]
+    assert p["pixel"] == [320, 240] and "picture_pixel" not in p
+    r = scene.depth_at([[160, 120]])
+    assert r["points"][0]["pixel"] == [160, 120] and "image_jpeg_b64" not in r
+    assert full["image_size"] == [640, 480]
