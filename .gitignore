@@ -18,6 +18,8 @@ data/models/*
 data/student/*
 data/judge/*
 !data/**/.gitkeep
+# the saved robot positions are on GitHub (operator, 26 Nov)
+!data/memory/positions.json
 
 .DS_Store
 
